@@ -1,0 +1,489 @@
+#include "general_context.h"
+#include "response_utils.h"
+#include <fstream>
+#include <filesystem>
+#include <algorithm>
+#include <sstream>
+
+
+void remove_nulls_recursive(nlohmann::json& j) {
+    if (j.is_object()) {
+        for (auto it = j.begin(); it != j.end(); ) {
+            if (it.value().is_null()) {
+                it = j.erase(it);
+            } else {
+                remove_nulls_recursive(it.value());
+                ++it;
+            }
+        }
+    } else if (j.is_array()) {
+        for (auto& item : j) {
+            remove_nulls_recursive(item);
+        }
+    }
+}
+
+namespace hyni {
+
+general_context::general_context(const std::string& schema_path, const context_config& config)
+    : m_config(config) {
+    load_schema(schema_path);
+    validate_schema();
+    cache_schema_elements();
+    apply_defaults();
+    build_headers();
+}
+
+void general_context::load_schema(const std::string& schema_path) {
+    std::ifstream file(schema_path);
+    if (!file.is_open()) {
+        throw schema_exception("Failed to open schema file: " + schema_path);
+    }
+
+    try {
+        file >> m_schema;
+    } catch (const nlohmann::json::parse_error& e) {
+        throw schema_exception("Failed to parse schema JSON: " + std::string(e.what()));
+    }
+}
+
+void general_context::validate_schema() {
+    // Check required top-level fields
+    std::vector<std::string> required_fields = {"provider", "api", "request_template", "message_format", "response_format"};
+
+    for (const auto& field : required_fields) {
+        if (!m_schema.contains(field)) {
+            throw schema_exception("Missing required schema field: " + field);
+        }
+    }
+
+    // Validate API configuration
+    if (!m_schema["api"].contains("endpoint")) {
+        throw schema_exception("Missing API endpoint in schema");
+    }
+
+    // Validate message format
+    if (!m_schema["message_format"].contains("structure") ||
+        !m_schema["message_format"].contains("content_types")) {
+        throw schema_exception("Invalid message format in schema");
+    }
+
+    // Validate response format
+    if (!m_schema["response_format"].contains("success") ||
+        !m_schema["response_format"]["success"].contains("text_path")) {
+        throw schema_exception("Invalid response format in schema");
+    }
+}
+
+void general_context::cache_schema_elements() {
+    // Cache provider info
+    m_provider_name = m_schema["provider"]["name"].get<std::string>();
+    m_endpoint = m_schema["api"]["endpoint"].get<std::string>();
+
+    // Cache request template
+    m_request_template = m_schema["request_template"];
+
+    // Cache response paths
+    m_text_path = parse_json_path(m_schema["response_format"]["success"]["text_path"]);
+    if (m_schema["response_format"].contains("error") &&
+        m_schema["response_format"]["error"].contains("error_path")) {
+        m_error_path = parse_json_path(m_schema["response_format"]["error"]["error_path"]);
+    }
+
+    // Cache message formats
+    m_message_structure = m_schema["message_format"]["structure"];
+    if (m_schema["message_format"]["content_types"].contains("text")) {
+        m_text_content_format = m_schema["message_format"]["content_types"]["text"];
+    }
+    if (m_schema["message_format"]["content_types"].contains("image")) {
+        m_image_content_format = m_schema["message_format"]["content_types"]["image"];
+    }
+}
+
+void general_context::build_headers() {
+    if (m_schema.contains("headers") && m_schema["headers"].contains("required")) {
+        for (const auto& [key, value] : m_schema["headers"]["required"].items()) {
+            m_headers[key] = value.get<std::string>();
+        }
+    }
+}
+
+void general_context::apply_defaults() {
+    if (m_schema.contains("models") && m_schema["models"].contains("default")) {
+        m_model_name = m_schema["models"]["default"].get<std::string>();
+    }
+}
+
+general_context& general_context::set_model(const std::string& model) {
+    // Validate model if available models are specified
+    if (m_schema.contains("models") && m_schema["models"].contains("available")) {
+        auto available_models = m_schema["models"]["available"];
+        bool found = false;
+        for (const auto& available_model : available_models) {
+            if (available_model.get<std::string>() == model) {
+                found = true;
+                break;
+            }
+        }
+        if (!found && m_config.enable_validation) {
+            throw validation_exception("Model '" + model + "' is not supported by this provider");
+        }
+    }
+
+    m_model_name = model;
+    return *this;
+}
+
+general_context& general_context::set_system_message(const std::string& system_text) {
+    if (!supports_system_messages() && m_config.enable_validation) {
+        throw validation_exception("Provider '" + m_provider_name + "' does not support system messages");
+    }
+    m_system_message = system_text;
+    return *this;
+}
+
+general_context& general_context::set_parameter(const std::string& key, const nlohmann::json& value) {
+    if (m_config.enable_validation) {
+        validate_parameter(key, value);
+    }
+    m_parameters[key] = value;
+    return *this;
+}
+
+general_context &general_context::set_parameters(const std::unordered_map<std::string, nlohmann::json>& params) {
+    for (const auto& [key, value] : params) {
+        set_parameter(key, value);
+    }
+    return *this;
+}
+
+general_context &general_context::add_user_message(const std::string& content,
+                                      const std::optional<std::string>& media_type,
+                                      const std::optional<std::string>& media_data) {
+    return add_message("user", content, media_type, media_data);
+}
+
+general_context &general_context::add_assistant_message(const std::string& content) {
+    return add_message("assistant", content);
+}
+
+general_context &general_context::add_message(const std::string& role, const std::string& content,
+                                 const std::optional<std::string>& media_type,
+                                 const std::optional<std::string>& media_data) {
+    auto message = create_message(role, content, media_type, media_data);
+    if (m_config.enable_validation) {
+        validate_message(message);
+    }
+    m_messages.push_back(message);
+    return *this;
+}
+
+nlohmann::json general_context::create_message(const std::string& role, const std::string& content,
+                                              const std::optional<std::string>& media_type,
+                                              const std::optional<std::string>& media_data) {
+    nlohmann::json message = m_message_structure;
+    message["role"] = role;
+
+    // Create content array
+    nlohmann::json content_array = nlohmann::json::array();
+    content_array.push_back(create_text_content(content));
+
+    // Add image if provided
+    if (media_type && media_data) {
+        if (!supports_multimodal() && m_config.enable_validation) {
+            throw validation_exception("Provider '" + m_provider_name + "' does not support multimodal content");
+        }
+        content_array.push_back(create_image_content(*media_type, *media_data));
+    }
+
+    message["content"] = content_array;
+    return message;
+}
+
+nlohmann::json general_context::create_text_content(const std::string& text) {
+    nlohmann::json content = m_text_content_format;
+    content["text"] = text;
+    return content;
+}
+
+nlohmann::json general_context::create_image_content(const std::string& media_type, const std::string& data) {
+    nlohmann::json content = m_image_content_format;
+    content["source"]["media_type"] = media_type;
+
+    // Handle both base64 data and file paths
+    if (is_base64_encoded(data)) {
+        content["source"]["data"] = data;
+    } else {
+        // Assume it's a file path and encode it
+        content["source"]["data"] = encode_image_to_base64(data);
+    }
+
+    return content;
+}
+
+nlohmann::json general_context::build_request() {
+    nlohmann::json request = m_request_template;
+
+    // Set model
+    if (!m_model_name.empty()) {
+        request["model"] = m_model_name;
+    }
+
+    // Set system message if supported
+    if (m_system_message && supports_system_messages()) {
+        auto field = m_schema["system_message"]["field"].get<std::string>();
+        if (field == "system") {
+            request["system"] = *m_system_message;
+        } else if (field == "messages") {
+            m_messages.insert(m_messages.begin(), create_message("system", *m_system_message));
+            request["messages"] = m_messages;
+        }
+    }
+
+    // Set messages
+    request["messages"] = m_messages;
+
+    // Apply custom parameters
+    for (const auto& [key, value] : m_parameters) {
+        request[key] = value;
+    }
+
+    // Apply config defaults
+    if (m_config.default_max_tokens && !request.contains("max_tokens")) {
+        request["max_tokens"] = *m_config.default_max_tokens;
+    }
+    if (m_config.default_temperature && !request.contains("temperature")) {
+        request["temperature"] = *m_config.default_temperature;
+    }
+
+    remove_nulls_recursive(request);
+
+    return request;
+}
+
+std::string general_context::extract_text_response(const nlohmann::json& response) {
+    try {
+        nlohmann::json text_node = resolve_path(response, m_text_path);
+        return text_node.get<std::string>();
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to extract text response: " + std::string(e.what()));
+    }
+}
+
+nlohmann::json general_context::extract_full_response(const nlohmann::json& response) {
+    try {
+        std::vector<std::string> content_path = parse_json_path(m_schema["response_format"]["success"]["content_path"]);
+        return resolve_path(response, content_path);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to extract full response: " + std::string(e.what()));
+    }
+}
+
+std::string general_context::extract_error(const nlohmann::json& response) {
+    if (m_error_path.empty()) {
+        return "Unknown error";
+    }
+
+    try {
+        nlohmann::json error_node = resolve_path(response, m_error_path);
+        return error_node.get<std::string>();
+    } catch (const std::exception&) {
+        return "Failed to parse error message";
+    }
+}
+
+nlohmann::json general_context::resolve_path(const nlohmann::json& json,
+                                           const std::vector<std::string>& path) const {
+    nlohmann::json current = json;
+
+    for (const auto& key : path) {
+        if (key.find_first_not_of("0123456789") == std::string::npos) {
+            // It's an array index
+            int index = std::stoi(key);
+            if (!current.is_array() || index >= static_cast<int>(current.size())) {
+                throw std::runtime_error("Invalid array access: index " + key);
+            }
+            current = current[index];
+        } else {
+            // It's an object key
+            if (!current.is_object() || !current.contains(key)) {
+                throw std::runtime_error("Invalid object access: key " + key);
+            }
+            current = current[key];
+        }
+    }
+
+    return current;
+}
+
+std::vector<std::string> general_context::parse_json_path(const nlohmann::json& path_array) const {
+    std::vector<std::string> path;
+    for (const auto& element : path_array) {
+        if (element.is_string()) {
+            path.push_back(element.get<std::string>());
+        } else if (element.is_number()) {
+            path.push_back(std::to_string(element.get<int>()));
+        }
+    }
+    return path;
+}
+
+std::vector<std::string> general_context::get_supported_models() const {
+    std::vector<std::string> models;
+    if (m_schema.contains("models") && m_schema["models"].contains("available")) {
+        for (const auto& model : m_schema["models"]["available"]) {
+            models.push_back(model.get<std::string>());
+        }
+    }
+    return models;
+}
+
+bool general_context::supports_multimodal() const {
+    return m_schema.contains("multimodal") &&
+           m_schema["multimodal"].contains("supported") &&
+           m_schema["multimodal"]["supported"].get<bool>();
+}
+
+bool general_context::supports_streaming() const {
+    return m_schema.contains("features") &&
+           m_schema["features"].contains("streaming") &&
+           m_schema["features"]["streaming"].get<bool>();
+}
+
+bool general_context::supports_system_messages() const {
+    return m_schema.contains("system_message") &&
+           m_schema["system_message"].contains("supported") &&
+           m_schema["system_message"]["supported"].get<bool>();
+}
+
+bool general_context::is_valid_request() const {
+    return get_validation_errors().empty();
+}
+
+std::vector<std::string> general_context::get_validation_errors() const {
+    std::vector<std::string> errors;
+
+    // Check required fields
+    if (m_model_name.empty()) {
+        errors.push_back("Model name is required");
+    }
+
+    if (m_messages.empty()) {
+        errors.push_back("At least one message is required");
+    }
+
+    // Validate message roles
+    if (m_schema.contains("validation") && m_schema["validation"].contains("message_validation")) {
+        auto validation = m_schema["validation"]["message_validation"];
+
+        if (validation.contains("last_message_role")) {
+            std::string required_role = validation["last_message_role"].get<std::string>();
+            if (!m_messages.empty()) {
+                std::string last_role = m_messages.back()["role"].get<std::string>();
+                if (last_role != required_role) {
+                    errors.push_back("Last message must be from: " + required_role);
+                }
+            }
+        }
+    }
+
+    return errors;
+}
+
+void general_context::validate_message(const nlohmann::json& message) const {
+    if (!message.contains("role") || !message.contains("content")) {
+        throw validation_exception("Message must contain 'role' and 'content' fields");
+    }
+
+    std::string role = message["role"].get<std::string>();
+    if (m_schema.contains("message_roles")) {
+        auto valid_roles = m_schema["message_roles"];
+        bool valid_role = false;
+        for (const auto& valid_role_item : valid_roles) {
+            if (valid_role_item.get<std::string>() == role) {
+                valid_role = true;
+                break;
+            }
+        }
+        if (!valid_role) {
+            throw validation_exception("Invalid message role: " + role);
+        }
+    }
+}
+
+void general_context::validate_parameter(const std::string& key, const nlohmann::json& value) const {
+    if (!m_schema.contains("parameters") || !m_schema["parameters"].contains(key)) {
+        return; // Parameter not defined in schema, allow it
+    }
+
+    auto param_def = m_schema["parameters"][key];
+
+    // Type validation
+    if (param_def.contains("type")) {
+        std::string expected_type = param_def["type"].get<std::string>();
+        if (expected_type == "integer" && !value.is_number_integer()) {
+            throw validation_exception("Parameter '" + key + "' must be an integer");
+        } else if (expected_type == "float" && !value.is_number()) {
+            throw validation_exception("Parameter '" + key + "' must be a number");
+        } else if (expected_type == "string" && !value.is_string()) {
+            throw validation_exception("Parameter '" + key + "' must be a string");
+        } else if (expected_type == "boolean" && !value.is_boolean()) {
+            throw validation_exception("Parameter '" + key + "' must be a boolean");
+        } else if (expected_type == "array" && !value.is_array()) {
+            throw validation_exception("Parameter '" + key + "' must be an array");
+        }
+    }
+
+    // Range validation for numbers
+    if (value.is_number() && param_def.contains("min")) {
+        double min_val = param_def["min"].get<double>();
+        if (value.get<double>() < min_val) {
+            throw validation_exception("Parameter '" + key + "' must be >= " + std::to_string(min_val));
+        }
+    }
+
+    if (value.is_number() && param_def.contains("max")) {
+        double max_val = param_def["max"].get<double>();
+        if (value.get<double>() > max_val) {
+            throw validation_exception("Parameter '" + key + "' must be <= " + std::to_string(max_val));
+        }
+    }
+}
+
+std::string general_context::encode_image_to_base64(const std::string& image_path) const {
+    std::ifstream file(image_path, std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open image file: " + image_path);
+    }
+
+    std::vector<char> buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // Use base64 encoding library (you'll need to include one)
+    return response_utils::base64_encode(reinterpret_cast<const unsigned char*>(buffer.data()), buffer.size());
+}
+
+bool general_context::is_base64_encoded(const std::string& data) const {
+    // Simple heuristic: base64 strings are typically much longer and contain only valid base64 chars
+    if (data.length() < 100) return false; // Too short to be image data
+
+    const std::string base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    return data.find_first_not_of(base64_chars) == std::string::npos;
+}
+
+void general_context::reset() {
+    clear_messages();
+    clear_parameters();
+    m_system_message.reset();
+    m_model_name.clear();
+    apply_defaults();
+}
+
+void general_context::clear_messages() {
+    m_messages.clear();
+}
+
+void general_context::clear_parameters() {
+    m_parameters.clear();
+}
+
+} // hyni
