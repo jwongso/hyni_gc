@@ -46,9 +46,9 @@ Encapsulates user questions, context type (coding, design, behavioral), and syst
 ### Using Builder Pattern
 ```cpp
 hyni::prompt prompt = hyni::prompt()
-    .with_type(hyni::question_type::Coding)
-    .with_user_text("Write a C++ function to reverse a string.")
-    .with_system_message("You are an expert C++ developer.");
+    .set_type(hyni::question_type::Coding)
+    .set_user_text("Write a C++ function to reverse a string.")
+    .set_system_message("You are an expert C++ developer.");
 
 std::string response = m_chat_api.send(prompt, [] { return false; });
 std::cout << "AI: " << response << std::endl;
