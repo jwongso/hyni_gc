@@ -68,8 +68,3 @@ nlohmann::json request = general_context.build_request();
 // All null fields are recursively removed before sending
 ```
 
-Switching Providers
-
-Switch easily between providers with a simple config:
-
-m_context->set_llm_provider(API_PROVIDER::ClaudeAI);
