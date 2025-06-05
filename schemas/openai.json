@@ -160,6 +160,7 @@
         }
       },
       "content_path": ["choices", 0, "message", "content"],
+      "text_path": ["choices", 0, "message", "content"],
       "usage_path": ["usage"],
       "model_path": ["model"],
       "finish_reason_path": ["choices", 0, "finish_reason"]

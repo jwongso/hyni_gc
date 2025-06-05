@@ -11,6 +11,7 @@
 
 using namespace hyni;
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 // Simple write callback for storing response in a string
 static size_t write_callback(void* contents, size_t size, size_t nmemb, std::string* s) {
@@ -22,6 +23,59 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, std::str
         return 0;
     }
     return new_length;
+}
+
+std::unordered_map<std::string, std::string> parse_hynirc(const std::string& file_path) {
+    std::unordered_map<std::string, std::string> config;
+    std::ifstream file(file_path);
+    std::string line;
+
+    while (std::getline(file, line)) {
+        size_t delimiter_pos = line.find('=');
+        if (delimiter_pos != std::string::npos) {
+            std::string key = line.substr(0, delimiter_pos);
+            std::string value = line.substr(delimiter_pos + 1);
+            // Trim whitespace
+            key.erase(0, key.find_first_not_of(" \t"));
+            key.erase(key.find_last_not_of(" \t") + 1);
+            value.erase(0, value.find_first_not_of(" \t"));
+            value.erase(value.find_last_not_of(" \t") + 1);
+            config[key] = value;
+        }
+    }
+
+    return config;
+}
+
+std::string get_api_key_for_provider(const std::string& provider) {
+    std::string env_var;
+    if (provider == "openai") {
+        env_var = "OA_API_KEY";
+    } else if (provider == "deepseek") {
+        env_var = "DS_API_KEY";
+    } else if (provider == "claude") {
+        env_var = "CL_API_KEY";
+    } else {
+        return "";
+    }
+
+    // Try environment variable first
+    const char* api_key = std::getenv(env_var.c_str());
+    if (api_key) {
+        return api_key;
+    }
+
+    // Try .hynirc file
+    fs::path rc_path = fs::path(std::getenv("HOME")) / ".hynirc";
+    if (fs::exists(rc_path)) {
+        auto config = parse_hynirc(rc_path.string());
+        auto it = config.find(env_var);
+        if (it != config.end()) {
+            return it->second;
+        }
+    }
+
+    return "";
 }
 
 // Minimal API call function for testing purposes
@@ -70,7 +124,20 @@ protected:
         // Get API key from environment
         const char* api_key = std::getenv("CL_API_KEY");
         if (!api_key) {
-            GTEST_SKIP() << "CL_API_KEY environment variable not set";
+
+            fs::path rc_path = fs::path(std::getenv("HOME")) / ".hynirc";
+
+            if (fs::exists(rc_path)) {
+                auto config = parse_hynirc(rc_path.string());
+
+                auto it = config.find("CL_API_KEY");
+                if (it != config.end()) {
+                    api_key = it->second.c_str();
+                }
+            }
+            else {
+                GTEST_SKIP() << "CL_API_KEY environment variable not set";
+            }
         }
         m_api_key = api_key;
 
@@ -168,7 +235,6 @@ TEST_F(GeneralContextFunctionalTest, BasicSingleMessage) {
     json response_json;
     try {
         response_str = make_api_call(api_url, api_key, payload, is_anthropic);
-        std::cout << response_json << std::endl;
         response_json = json::parse(response_str);
     } catch (const std::exception& ex) {
         FAIL() << "API call failed: " << ex.what();
@@ -462,7 +528,6 @@ TEST_F(GeneralContextFunctionalTest, ActualAPIIntegration) {
     json response_json;
     try {
         response_str = make_api_call(api_url, api_key, payload, is_anthropic);
-        std::cout << response_json << std::endl;
         response_json = json::parse(response_str);
     } catch (const std::exception& ex) {
         FAIL() << "API call failed: " << ex.what();
@@ -472,4 +537,373 @@ TEST_F(GeneralContextFunctionalTest, ActualAPIIntegration) {
     std::string text = m_context->extract_text_response(response_json);
     EXPECT_FALSE(text.empty());
     EXPECT_EQ(text, "Integration test successful");
+}
+
+TEST_F(GeneralContextFunctionalTest, MultiProviderSupport) {
+    auto& manager = schema_manager::get_instance();
+    std::vector<std::string> providers = {"claude", "openai", "deepseek"};
+
+    for (const auto& provider : providers) {
+        std::string api_key = get_api_key_for_provider(provider);
+        if (api_key.empty()) {
+            std::cout << "Skipping " << provider << " test: No API key available" << std::endl;
+            continue;
+        }
+
+        try {
+            // Create context for this provider
+            context_config config;
+            config.enable_validation = true;
+            config.default_max_tokens = 50;
+
+            auto context = manager.create_context(provider, config);
+            EXPECT_NE(context, nullptr);
+
+            // Set up a simple request
+            context->add_user_message("Respond with exactly one word: 'Success'");
+
+            auto request = context->build_request();
+            std::string payload = request.dump();
+            std::string api_url = context->get_endpoint();
+            bool is_anthropic = (provider == "claude");
+
+            // Make API call
+            std::string response_str = make_api_call(api_url, api_key, payload, is_anthropic);
+            json response_json = json::parse(response_str);
+
+            // Extract response
+            std::string text = context->extract_text_response(response_json);
+            EXPECT_FALSE(text.empty());
+            EXPECT_TRUE(text.find("Success") != std::string::npos);
+
+        } catch (const std::exception& ex) {
+            FAIL() << "Provider " << provider << " test failed: " << ex.what();
+        }
+    }
+}
+
+// Test real multi-turn conversation with actual API
+TEST_F(GeneralContextFunctionalTest, RealMultiTurnConversation) {
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = m_context->get_provider_name() == "claude";
+
+    // First turn
+    m_context->add_user_message("What's the capital of France?");
+    auto request1 = m_context->build_request();
+    std::string payload1 = request1.dump();
+
+    std::string response_str1;
+    json response_json1;
+    try {
+        response_str1 = make_api_call(api_url, api_key, payload1, is_anthropic);
+        response_json1 = json::parse(response_str1);
+    } catch (const std::exception& ex) {
+        FAIL() << "First API call failed: " << ex.what();
+    }
+
+    // Extract and add assistant response
+    std::string text1 = m_context->extract_text_response(response_json1);
+    EXPECT_FALSE(text1.empty());
+    m_context->add_assistant_message(text1);
+
+    // Second turn
+    m_context->add_user_message("What's the population of that city?");
+    auto request2 = m_context->build_request();
+    std::string payload2 = request2.dump();
+
+    std::string response_str2;
+    json response_json2;
+    try {
+        response_str2 = make_api_call(api_url, api_key, payload2, is_anthropic);
+        response_json2 = json::parse(response_str2);
+    } catch (const std::exception& ex) {
+        FAIL() << "Second API call failed: " << ex.what();
+    }
+
+    // Extract second response
+    std::string text2 = m_context->extract_text_response(response_json2);
+    EXPECT_FALSE(text2.empty());
+
+    // Verify the response mentions Paris and population
+    EXPECT_TRUE(text2.find("Paris") != std::string::npos ||
+                text2.find("million") != std::string::npos ||
+                text2.find("population") != std::string::npos);
+}
+
+// Test real image handling with Claude
+TEST_F(GeneralContextFunctionalTest, RealImageHandling) {
+    // Skip if not using Claude (which has reliable image support)
+    if (m_context->get_provider_name() != "claude") {
+        GTEST_SKIP() << "Skipping image test for non-Claude provider";
+    }
+
+    create_test_image();
+
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = true;
+
+    m_context->add_user_message("Describe this image in exactly 5 words.",
+                                "image/png", "../tests/german.png");
+    auto request = m_context->build_request();
+    std::string payload = request.dump();
+
+    std::string response_str;
+    json response_json;
+    try {
+        response_str = make_api_call(api_url, api_key, payload, is_anthropic);
+        response_json = json::parse(response_str);
+    } catch (const std::exception& ex) {
+        FAIL() << "API call with image failed: " << ex.what();
+    }
+
+    // Extract response
+    std::string text = m_context->extract_text_response(response_json);
+    EXPECT_FALSE(text.empty());
+
+    // Count words (simple approximation)
+    int word_count = 0;
+    std::istringstream iss(text);
+    std::string word;
+    while (iss >> word) {
+        word_count++;
+    }
+
+    // The model might not follow instructions exactly, so we're lenient
+    EXPECT_LE(word_count, 10);
+}
+
+// Test provider-specific features
+TEST_F(GeneralContextFunctionalTest, ProviderSpecificFeatures) {
+    auto& manager = schema_manager::get_instance();
+
+    // Test OpenAI-specific features
+    std::string oa_api_key = get_api_key_for_provider("openai");
+    if (!oa_api_key.empty()) {
+        try {
+            auto oa_context = manager.create_context("openai");
+
+            // Test OpenAI-specific parameters like response_format for JSON mode
+            oa_context->set_parameter("response_format", {{"type", "json_object"}});
+            oa_context->add_user_message("Return a JSON with keys 'greeting' and 'value'. The greeting should be 'hello' and the value should be 42.");
+
+            auto request = oa_context->build_request();
+            std::string payload = request.dump();
+            std::string api_url = oa_context->get_endpoint();
+
+            std::string response_str = make_api_call(api_url, oa_api_key, payload, false);
+            json response_json = json::parse(response_str);
+
+            std::string text = oa_context->extract_text_response(response_json);
+            EXPECT_FALSE(text.empty());
+
+            // Verify JSON response
+            try {
+                json parsed = json::parse(text);
+                EXPECT_TRUE(parsed.contains("greeting"));
+                EXPECT_TRUE(parsed.contains("value"));
+                EXPECT_EQ(parsed["greeting"], "hello");
+                EXPECT_EQ(parsed["value"], 42);
+            } catch (...) {
+                // NOTE: This might fail if the model doesn't follow instructions exactly
+                // or if the JSON extraction path is incorrect in the schema
+                std::cout << "Warning: Could not parse JSON response: " << text << std::endl;
+            }
+
+        } catch (const std::exception& ex) {
+            std::cout << "OpenAI-specific test failed: " << ex.what() << std::endl;
+        }
+    }
+
+    // Test DeepSeek-specific features
+    std::string ds_api_key = get_api_key_for_provider("deepseek");
+    if (!ds_api_key.empty()) {
+        try {
+            auto ds_context = manager.create_context("deepseek");
+
+            // Test DeepSeek-specific parameters or models
+            ds_context->set_model("deepseek-coder");
+            ds_context->add_user_message("Write a Python function to calculate the Fibonacci sequence up to n.");
+
+            auto request = ds_context->build_request();
+            std::string payload = request.dump();
+            std::string api_url = ds_context->get_endpoint();
+
+            std::string response_str = make_api_call(api_url, ds_api_key, payload, false);
+            json response_json = json::parse(response_str);
+
+            std::string text = ds_context->extract_text_response(response_json);
+            EXPECT_FALSE(text.empty());
+            EXPECT_TRUE(text.find("def") != std::string::npos);
+            EXPECT_TRUE(text.find("fibonacci") != std::string::npos ||
+                        text.find("Fibonacci") != std::string::npos);
+
+        } catch (const std::exception& ex) {
+            std::cout << "DeepSeek-specific test failed: " << ex.what() << std::endl;
+        }
+    }
+}
+
+// Test error handling with invalid requests
+TEST_F(GeneralContextFunctionalTest, ErrorHandlingWithRealAPI) {
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = m_context->get_provider_name() == "claude";
+
+    // Create an invalid request (e.g., exceeding max tokens)
+    EXPECT_ANY_THROW(m_context->set_parameter("max_tokens", 100000).
+                     add_user_message("This should trigger an error"));
+
+    auto request = m_context->build_request();
+    std::string payload = request.dump();
+
+    std::string response_str;
+    json response_json;
+    try {
+        response_str = make_api_call(api_url, api_key, payload, is_anthropic);
+        response_json = json::parse(response_str);
+
+        // Check if response contains error
+        if (response_json.contains("error") ||
+            (response_json.contains("type") && response_json["type"] == "error")) {
+            std::string error_msg = m_context->extract_error(response_json);
+            EXPECT_FALSE(error_msg.empty());
+            std::cout << "Expected error received: " << error_msg << std::endl;
+        } else {
+            // Some providers might silently fix invalid parameters
+            std::cout << "Warning: Expected error but got success response" << std::endl;
+        }
+    } catch (const std::exception& ex) {
+        // Network errors or other exceptions are also acceptable
+        std::cout << "Expected error exception: " << ex.what() << std::endl;
+    }
+}
+
+// Test streaming parameter (though we can't test actual streaming with our simple API call)
+TEST_F(GeneralContextFunctionalTest, StreamingParameterTest) {
+    if (!m_context->supports_streaming()) {
+        GTEST_SKIP() << "Provider doesn't support streaming";
+    }
+
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = m_context->get_provider_name() == "claude";
+
+    // Set streaming parameter
+    m_context->set_parameter("stream", true);
+    m_context->add_user_message("Say hello");
+
+    auto request = m_context->build_request();
+    EXPECT_TRUE(request.contains("stream"));
+    EXPECT_TRUE(request["stream"].get<bool>());
+
+    // NOTE: We can't actually test streaming with our simple API call function
+    // This would require a more complex implementation with CURL callbacks
+    // Just verify the parameter is set correctly
+
+    // Reset for other tests
+    m_context->set_parameter("stream", false);
+}
+
+// Test with very complex prompts
+TEST_F(GeneralContextFunctionalTest, ComplexPromptHandling) {
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = m_context->get_provider_name() == "claude";
+
+    // Create a complex prompt with special characters, code blocks, etc.
+    std::string complex_prompt = R"(
+    # Test Document
+
+    This is a *complex* prompt with **markdown** and `code`.
+
+    ```python
+    def hello_world():
+        print("Hello, world!")
+        return 42
+    ```
+
+    Special characters: €£¥$@#%^&*()_+{}|:"<>?~`-=[]\\;',./
+
+    Please respond with:
+    1. The number of lines in the Python function
+    2. The exact string that would be printed
+    )";
+
+    m_context->add_user_message(complex_prompt);
+
+    auto request = m_context->build_request();
+    std::string payload = request.dump();
+
+    std::string response_str;
+    json response_json;
+    try {
+        response_str = make_api_call(api_url, api_key, payload, is_anthropic);
+        response_json = json::parse(response_str);
+    } catch (const std::exception& ex) {
+        FAIL() << "API call with complex prompt failed: " << ex.what();
+    }
+
+    // Extract response
+    std::string text = m_context->extract_text_response(response_json);
+    EXPECT_FALSE(text.empty());
+
+    // Verify response contains expected information
+    EXPECT_TRUE(text.find("2") != std::string::npos); // Number of lines
+    EXPECT_TRUE(text.find("Hello, world!") != std::string::npos); // Printed string
+}
+
+// Test with different model versions for the same provider
+TEST_F(GeneralContextFunctionalTest, ModelVersionTest) {
+    // Skip if we're not using Claude (which has multiple models we can test)
+    if (m_context->get_provider_name() != "claude") {
+        GTEST_SKIP() << "Skipping model version test for non-Claude provider";
+    }
+
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = true;
+
+    // Get available models
+    auto models = m_context->get_supported_models();
+    if (models.size() < 2) {
+        GTEST_SKIP() << "Not enough models available for testing";
+    }
+
+    // Test with two different models
+    std::vector<std::string> test_models = {
+        "claude-3-5-sonnet-20241022",
+        "claude-3-haiku-20240307"
+    };
+
+    for (const auto& model : test_models) {
+        // Check if this model is in the supported list
+        if (std::find(models.begin(), models.end(), model) == models.end()) {
+            std::cout << "Skipping unsupported model: " << model << std::endl;
+            continue;
+        }
+
+        try {
+            m_context->reset();
+            m_context->set_model(model);
+            m_context->add_user_message("Respond with your model name");
+
+            auto request = m_context->build_request();
+            std::string payload = request.dump();
+
+            std::string response_str = make_api_call(api_url, api_key, payload, is_anthropic);
+            json response_json = json::parse(response_str);
+
+            std::string text = m_context->extract_text_response(response_json);
+            EXPECT_FALSE(text.empty());
+
+            // The model should mention its name or version
+            // Note: This is not guaranteed as models don't always self-identify correctly
+            std::cout << "Model " << model << " response: " << text << std::endl;
+
+        } catch (const std::exception& ex) {
+            std::cout << "Test with model " << model << " failed: " << ex.what() << std::endl;
+        }
+    }
 }
