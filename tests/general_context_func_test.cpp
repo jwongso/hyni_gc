@@ -13,6 +13,58 @@ using namespace hyni;
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
+// Structure to hold streaming response data
+struct StreamingResponse {
+    std::vector<std::string> events;
+    std::string complete_content;
+    bool finished = false;
+    bool error = false;
+    std::string error_message;
+};
+
+// Callback for handling streaming SSE data
+static size_t streaming_callback(void* contents, size_t size, size_t nmemb, StreamingResponse* response) {
+    if (!response) return 0;
+
+    size_t total_size = size * nmemb;
+    std::string chunk(static_cast<char*>(contents), total_size);
+
+    // Parse SSE format: each event starts with "data: " and ends with "\n\n"
+    std::istringstream stream(chunk);
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        if (line.find("data: ") == 0) {
+            std::string json_data = line.substr(6); // Remove "data: " prefix
+
+            if (json_data == "[DONE]") {
+                response->finished = true;
+                continue;
+            }
+
+            try {
+                json event = json::parse(json_data);
+                response->events.push_back(json_data);
+
+                // Extract content from delta
+                if (event.contains("delta") && event["delta"].contains("text")) {
+                    response->complete_content += event["delta"]["text"].get<std::string>();
+                }
+
+                // Check for errors
+                if (event.contains("error")) {
+                    response->error = true;
+                    response->error_message = event["error"]["message"].get<std::string>();
+                }
+            } catch (const json::parse_error& e) {
+                std::cerr << "Error parsing JSON: " << e.what() << std::endl;
+            }
+        }
+    }
+
+    return total_size;
+}
+
 // Simple write callback for storing response in a string
 static size_t write_callback(void* contents, size_t size, size_t nmemb, std::string* s) {
     if (!s) return 0;
@@ -106,6 +158,56 @@ std::string make_api_call(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        throw std::runtime_error(std::string("CURL failed: ") + curl_easy_strerror(res));
+    }
+
+    return response;
+}
+
+// Enhanced API call function with streaming support
+std::string make_streaming_api_call(const std::string& url,
+                                    const std::string& api_key,
+                                    const std::string& payload,
+                                    StreamingResponse* streaming_response = nullptr,
+                                    bool is_anthropic = false) {
+    CURL* curl = curl_easy_init();
+    if (!curl) throw std::runtime_error("Failed to init curl");
+
+    std::string response;
+    struct curl_slist* headers = nullptr;
+
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: text/event-stream");
+
+    if (is_anthropic) {
+        headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+        headers = curl_slist_append(headers, ("x-api-key: " + api_key).c_str());
+    } else {
+        headers = curl_slist_append(headers, ("Authorization: Bearer " + api_key).c_str());
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+
+    if (streaming_response) {
+        // Set up for streaming
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, streaming_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, streaming_response);
+    } else {
+        // Regular response
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    }
 
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
@@ -780,7 +882,7 @@ TEST_F(GeneralContextFunctionalTest, ErrorHandlingWithRealAPI) {
     }
 }
 
-// Test streaming parameter (though we can't test actual streaming with our simple API call)
+// Test streaming parameter and functionality
 TEST_F(GeneralContextFunctionalTest, StreamingParameterTest) {
     if (!m_context->supports_streaming()) {
         GTEST_SKIP() << "Provider doesn't support streaming";
@@ -790,17 +892,143 @@ TEST_F(GeneralContextFunctionalTest, StreamingParameterTest) {
     std::string api_url = m_context->get_endpoint();
     bool is_anthropic = m_context->get_provider_name() == "claude";
 
-    // Set streaming parameter
+    // Test 1: Verify streaming parameter is set correctly
     m_context->set_parameter("stream", true);
-    m_context->add_user_message("Say hello");
+    m_context->add_user_message("Count from 1 to 5, explaining each number.");
 
     auto request = m_context->build_request();
     EXPECT_TRUE(request.contains("stream"));
     EXPECT_TRUE(request["stream"].get<bool>());
 
-    // NOTE: We can't actually test streaming with our simple API call function
-    // This would require a more complex implementation with CURL callbacks
-    // Just verify the parameter is set correctly
+    // Test 2: Actually test streaming functionality
+    StreamingResponse streaming_response;
+    std::string payload = request.dump();
+
+    try {
+        make_streaming_api_call(api_url, api_key, payload, &streaming_response, is_anthropic);
+
+        // Verify streaming worked
+        EXPECT_GT(streaming_response.events.size(), 0) << "Should receive multiple streaming events";
+        EXPECT_FALSE(streaming_response.complete_content.empty()) << "Should have accumulated content";
+        EXPECT_FALSE(streaming_response.error) << "Should not have errors: " << streaming_response.error_message;
+
+        // Verify we received incremental updates
+        EXPECT_GT(streaming_response.events.size(), 1) << "Should receive multiple chunks for streaming";
+
+        std::cout << "Received " << streaming_response.events.size() << " streaming events" << std::endl;
+        std::cout << "Complete content length: " << streaming_response.complete_content.length() << std::endl;
+
+    } catch (const std::exception& e) {
+        FAIL() << "Streaming test failed: " << e.what();
+    }
+
+    // Test 3: Compare with non-streaming response
+    m_context->set_parameter("stream", false);
+    auto non_streaming_request = m_context->build_request();
+    EXPECT_FALSE(non_streaming_request["stream"].get<bool>());
+
+    std::string non_streaming_payload = non_streaming_request.dump();
+    std::string non_streaming_response = make_streaming_api_call(api_url, api_key, non_streaming_payload, nullptr, is_anthropic);
+
+    EXPECT_FALSE(non_streaming_response.empty()) << "Non-streaming response should not be empty";
+
+    // Parse non-streaming response to compare content
+    try {
+        json non_streaming_json = json::parse(non_streaming_response);
+        if (non_streaming_json.contains("content") && non_streaming_json["content"].is_array()) {
+            std::string non_streaming_content = non_streaming_json["content"][0]["text"].get<std::string>();
+
+            // Content should be similar (though not necessarily identical due to potential randomness)
+            EXPECT_GT(streaming_response.complete_content.length(), 0);
+            EXPECT_GT(non_streaming_content.length(), 0);
+
+            std::cout << "Streaming content preview: " << streaming_response.complete_content.substr(0, 100) << "..." << std::endl;
+            std::cout << "Non-streaming content preview: " << non_streaming_content.substr(0, 100) << "..." << std::endl;
+        }
+    } catch (const json::parse_error& e) {
+        std::cerr << "JSON parse error: " << e.what() << std::endl;
+    }
+
+    // Reset for other tests
+    m_context->set_parameter("stream", false);
+}
+
+// Test streaming error handling
+TEST_F(GeneralContextFunctionalTest, StreamingErrorHandlingTest) {
+    if (!m_context->supports_streaming()) {
+        GTEST_SKIP() << "Provider doesn't support streaming";
+    }
+
+    std::string api_key = "invalid_key";  // Intentionally invalid
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = m_context->get_provider_name() == "claude";
+
+    m_context->set_parameter("stream", true);
+    m_context->add_user_message("Hello");
+
+    auto request = m_context->build_request();
+    std::string payload = request.dump();
+
+    StreamingResponse streaming_response;
+
+    try {
+        make_streaming_api_call(api_url, api_key, payload, &streaming_response, is_anthropic);
+
+        // Should either throw an exception or set error flag
+        if (!streaming_response.error) {
+            // If no error flag, the API call should have thrown an exception
+            // If we reach here, something unexpected happened
+            EXPECT_TRUE(streaming_response.events.empty()) << "Should not receive events with invalid key";
+        } else {
+            EXPECT_TRUE(streaming_response.error) << "Should detect error with invalid API key";
+            EXPECT_FALSE(streaming_response.error_message.empty()) << "Should have error message";
+        }
+
+    } catch (const std::exception& e) {
+        // This is expected behavior for invalid API key
+        EXPECT_NE(std::string(e.what()).find("CURL failed"), std::string::npos);
+    }
+
+    // Reset for other tests
+    m_context->set_parameter("stream", false);
+}
+
+// Test streaming with different message types
+TEST_F(GeneralContextFunctionalTest, StreamingWithDifferentMessagesTest) {
+    if (!m_context->supports_streaming()) {
+        GTEST_SKIP() << "Provider doesn't support streaming";
+    }
+
+    std::string api_key = m_api_key;
+    std::string api_url = m_context->get_endpoint();
+    bool is_anthropic = m_context->get_provider_name() == "claude";
+
+    // Test with a longer response that should definitely stream
+    m_context->set_parameter("stream", true);
+    m_context->add_user_message("Write a short story about a robot learning to paint. Make it at least 3 paragraphs long.");
+
+    auto request = m_context->build_request();
+    std::string payload = request.dump();
+
+    StreamingResponse streaming_response;
+
+    try {
+        make_streaming_api_call(api_url, api_key, payload, &streaming_response, is_anthropic);
+
+        // For longer content, we should definitely see multiple chunks
+        EXPECT_GT(streaming_response.events.size(), 3) << "Longer content should produce multiple streaming events";
+        EXPECT_GT(streaming_response.complete_content.length(), 200) << "Story should be reasonably long";
+        EXPECT_FALSE(streaming_response.error) << "Should not have errors: " << streaming_response.error_message;
+
+        // Verify the content makes sense (basic sanity check)
+        std::string content_lower = streaming_response.complete_content;
+        std::transform(content_lower.begin(), content_lower.end(), content_lower.begin(), ::tolower);
+        EXPECT_NE(content_lower.find("robot"), std::string::npos) << "Should mention robot";
+        EXPECT_NE(content_lower.find("paint"), std::string::npos) << "Should mention painting";
+
+    } catch (const std::exception& e) {
+        FAIL() << "Streaming test with longer content failed: " << e.what();
+    }
 
     // Reset for other tests
     m_context->set_parameter("stream", false);
