@@ -24,12 +24,11 @@ auto response = hyni::chat("Explain quantum computing")
 
 - 🎯 **Provider Agnostic** - Switch between OpenAI, Claude, DeepSeek with one line
 - 🧠 **Smart Context Management** - Automatic conversation history and memory
-- 🎙️ **Live Audio Transcription** - Built-in Whisper integration
+- 🎙️ **Live Audio Transcription** - Built-in Whisper integration (TODO)
 - 💬 **Streaming & Async** - Real-time responses with full async support
 - 🛑 **Cancellation Control** - Stop requests mid-flight
 - 📦 **Modern C++20** - Clean, expressive API design
 - 🔧 **Schema-Driven** - JSON configs handle all provider differences
-- ⚡ **Zero Dependencies** - Self-contained with optional integrations
 
 ---
 
