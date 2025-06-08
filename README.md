@@ -53,14 +53,19 @@ std::string answer = chat.send_message("What is recursion?");
 auto context = std::make_unique<general_context>("claude");
 context->set_system_message("You are a helpful coding assistant")
        ->set_parameter("temperature", 0.8)
-       ->set_parameter("max_tokens", 1000);
+       ->set_parameter("max_tokens", 1000)
+       ->set_api_key("1234567890");
 
 chat_api chat(std::move(context));
 
 // Reuse the same chat for multiple questions
-std::string response1 = chat.send_message("Write a C++ class for a stack");
-std::string response2 = chat.send_message("Now add error handling");
-std::string response3 = chat.send_message("Show me how to test it");
+std::string response = chat.send_message("Write a C++ class for a stack");
+chat.get_context().add_assistant_message(response);
+response = chat.send_message("Now add error handling");
+chat.get_context().add_assistant_message(response);
+response = chat.send_message("Show me how to test it");
+chat.get_context().add_assistant_message(response);
+response = chat.send_message("And now, explain me the time and space complexities");
 ```
 
 ### Advanced Context Management
