@@ -51,9 +51,9 @@ std::string answer = chat.send_message("What is recursion?");
 ```cpp
 // Set up your context
 auto context = std::make_unique<general_context>("claude");
-context->set_system_message("You are a helpful coding assistant");
-context->set_parameter("temperature", 0.8);
-context->set_parameter("max_tokens", 1000);
+context->set_system_message("You are a helpful coding assistant")
+       ->set_parameter("temperature", 0.8)
+       ->set_parameter("max_tokens", 1000);
 
 chat_api chat(std::move(context));
 
