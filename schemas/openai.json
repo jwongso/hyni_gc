@@ -13,7 +13,8 @@
   "authentication": {
     "type": "header",
     "key_name": "Authorization",
-    "key_placeholder": "Bearer <YOUR_OPENAI_API_KEY>"
+    "key_prefix": "Bearer ",
+    "key_placeholder": "<YOUR_OPENAI_API_KEY>"
   },
   "headers": {
     "required": {

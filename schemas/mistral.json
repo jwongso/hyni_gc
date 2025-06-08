@@ -13,7 +13,8 @@
   "authentication": {
     "type": "header",
     "key_name": "Authorization",
-    "key_placeholder": "Bearer <YOUR_MISTRAL_API_KEY>"
+    "key_prefix": "Bearer ",
+    "key_placeholder": "<YOUR_MISTRAL_API_KEY>"
   },
   "headers": {
     "required": {
@@ -25,13 +26,16 @@
   "models": {
     "available": [
       "mistral-small-3.1",
+      "mistral-small-latest",
       "mistral-medium-3",
-      "mistral-large-2"
+      "mistral-medium-latest",
+      "mistral-large-2",
+      "mistral-large-latest"
     ],
-    "default": "mistral-small-3.1"
+    "default": "mistral-small-latest"
   },
   "request_template": {
-    "model": "mistral-small-3.1",
+    "model": "mistral-small-latest",
     "messages": [],
     "temperature": 0.7,
     "top_p": 1.0,

@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include "../src/schema_manager.h"
+#include "../src/config.h"
 #include <nlohmann/json.hpp>
-#include <fstream>
 #include <cstdlib>
 #include <thread>
 #include <chrono>
@@ -75,59 +75,6 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, std::str
         return 0;
     }
     return new_length;
-}
-
-std::unordered_map<std::string, std::string> parse_hynirc(const std::string& file_path) {
-    std::unordered_map<std::string, std::string> config;
-    std::ifstream file(file_path);
-    std::string line;
-
-    while (std::getline(file, line)) {
-        size_t delimiter_pos = line.find('=');
-        if (delimiter_pos != std::string::npos) {
-            std::string key = line.substr(0, delimiter_pos);
-            std::string value = line.substr(delimiter_pos + 1);
-            // Trim whitespace
-            key.erase(0, key.find_first_not_of(" \t"));
-            key.erase(key.find_last_not_of(" \t") + 1);
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            config[key] = value;
-        }
-    }
-
-    return config;
-}
-
-std::string get_api_key_for_provider(const std::string& provider) {
-    std::string env_var;
-    if (provider == "openai") {
-        env_var = "OA_API_KEY";
-    } else if (provider == "deepseek") {
-        env_var = "DS_API_KEY";
-    } else if (provider == "claude") {
-        env_var = "CL_API_KEY";
-    } else {
-        return "";
-    }
-
-    // Try environment variable first
-    const char* api_key = std::getenv(env_var.c_str());
-    if (api_key) {
-        return api_key;
-    }
-
-    // Try .hynirc file
-    fs::path rc_path = fs::path(std::getenv("HOME")) / ".hynirc";
-    if (fs::exists(rc_path)) {
-        auto config = parse_hynirc(rc_path.string());
-        auto it = config.find(env_var);
-        if (it != config.end()) {
-            return it->second;
-        }
-    }
-
-    return "";
 }
 
 // Minimal API call function for testing purposes

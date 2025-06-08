@@ -1,320 +1,201 @@
 #include "chat_api.h"
-#include "config.h"
-#include "openai_context.h"
-#include "deepseek_context.h"
-#include "claudeai_context.h"
-#include <fstream>
-#include <memory>
-#include <filesystem>
+#include "http_client.h"
+#include "http_client_factory.h"
 
-namespace fs = std::filesystem;
-using json = nlohmann::json;
-using namespace hyni;
+namespace hyni {
 
-std::unique_ptr<model_context> chat_api::create_context(API_PROVIDER provider) {
-    switch(provider) {
-    case API_PROVIDER::OpenAI: return std::make_unique<openai_context>();
-    case API_PROVIDER::DeepSeek: return std::make_unique<deepseek_context>();
-    case API_PROVIDER::ClaudeAI: return std::make_unique<claudeai_context>();
-    default: throw std::runtime_error("Unsupported provider");
-    }
+chat_api::chat_api(std::unique_ptr<general_context> context)
+    : m_context(std::move(context)) {
+    ensure_http_client();
 }
 
-std::string get_home_dir() {
-#ifdef _WIN32
-    const char* home = std::getenv("USERPROFILE");
-#else
-    const char* home = std::getenv("HOME");
-#endif
-    return home ? std::string(home) : "";
-}
+std::string chat_api::send_message(const std::string& message, progress_callback cancel_check) {
+    // Clear previous messages if needed (depending on your use case)
+    m_context->clear_messages();
+    m_context->add_user_message(message);
 
-const std::string& hyni::get_commit_hash() {
-    static const std::string hash = HYNI_COMMIT_HASH;
-    return hash;
-}
+    auto request = m_context->build_request();
+    auto response = m_http_client->post(m_context->get_endpoint(), request, cancel_check);
 
-std::unordered_map<std::string, std::string> parse_hynirc(const std::string& file_path) {
-    std::unordered_map<std::string, std::string> config;
-    std::ifstream file(file_path);
-    std::string line;
-
-    while (std::getline(file, line)) {
-        size_t delimiter_pos = line.find('=');
-        if (delimiter_pos != std::string::npos) {
-            std::string key = line.substr(0, delimiter_pos);
-            std::string value = line.substr(delimiter_pos + 1);
-            // Trim whitespace
-            key.erase(0, key.find_first_not_of(" \t"));
-            key.erase(key.find_last_not_of(" \t") + 1);
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            config[key] = value;
-        }
+    if (!response.success) {
+        throw std::runtime_error("API request failed: " + response.error_message);
     }
 
-    return config;
-}
-
-API_PROVIDER chat_api::detect_api_provider(const std::string& url) {
-    if (url.find("openai.com") != std::string::npos) {
-        return API_PROVIDER::OpenAI;
-    } else if (url.find("deepseek.com") != std::string::npos) {
-        return API_PROVIDER::DeepSeek;
-    } else if (url.find("anthropic.com") != std::string::npos) {
-        return API_PROVIDER::ClaudeAI;
-    } else {
-        return API_PROVIDER::Unknown;
-    }
-}
-
-std::string get_api_key(API_PROVIDER provider) {
-    if (provider == API_PROVIDER::OpenAI) {
-        if (const char* api_key_cstr = std::getenv("OA_API_KEY")) {
-            return std::string(api_key_cstr);
-        }
-    } else if (provider == API_PROVIDER::DeepSeek) {
-        if (const char* api_key_cstr = std::getenv("DS_API_KEY")) {
-            return std::string(api_key_cstr);
-        }
-    } else if (provider == API_PROVIDER::ClaudeAI) {
-        if (const char* api_key_cstr = std::getenv("CL_API_KEY")) {
-            return std::string(api_key_cstr);
-        }
-    }
-
-    std::string home_dir = get_home_dir();
-    if (!home_dir.empty()) {
-        fs::path rc_path = fs::path(home_dir) / ".hynirc";
-
-        if (fs::exists(rc_path)) {
-            auto config = parse_hynirc(rc_path.string());
-
-            if (provider == API_PROVIDER::OpenAI) {
-                auto it = config.find("OA_API_KEY");
-                if (it != config.end()) {
-                    return it->second;
-                }
-            }
-            else if (provider == API_PROVIDER::DeepSeek) {
-                auto it = config.find("DS_API_KEY");
-                if (it != config.end()) {
-                    return it->second;
-                }
-            }
-            else if (provider == API_PROVIDER::ClaudeAI) {
-                auto it = config.find("CL_API_KEY");
-                if (it != config.end()) {
-                    return it->second;
-                }
-            }
-        }
-    }
-
-    return {};
-}
-
-chat_api::chat_api(const std::string& url)
-    : m_curl_handle(curl_easy_init())
-    , m_context(create_context(detect_api_provider(url)))
-{
-    if (!m_curl_handle) {
-        throw std::runtime_error("Failed to initialize CURL handle");
-    }
-
-    context().configure(get_api_key(context().get_llm_provider()));
-}
-
-chat_api::chat_api(API_PROVIDER provider)
-    : m_curl_handle(curl_easy_init())
-    , m_context(create_context(provider))
-{
-    if (!m_curl_handle) {
-        throw std::runtime_error("Failed to initialize CURL handle");
-    }
-
-    context().configure(get_api_key(context().get_llm_provider()));
-}
-
-chat_api::~chat_api() {
-    cancel();
-    if (m_curl_handle) {
-        curl_easy_cleanup(m_curl_handle);
-        m_curl_handle = nullptr;
-    }
-}
-
-void chat_api::cancel() {
-    m_cancel_flag.store(true);
-    if (m_curl_handle) {
-        curl_easy_pause(m_curl_handle, CURLPAUSE_ALL);
-    }
-}
-
-bool chat_api::has_api_key() const {
-    return !context().get_api_key().empty();
-}
-
-void chat_api::set_api_key(const std::string& api_key) {
-    context().configure(api_key, context().get_api_url(), context().get_model());
-}
-
-API_PROVIDER chat_api::get_api_provider() const {
-    return context().get_llm_provider();
-}
-
-size_t chat_api::write_callback(void* contents, size_t size, size_t nmemb, std::string* s) {
-    if (!s) return 0;
-    size_t new_length = size * nmemb;
     try {
-        s->append(static_cast<char*>(contents), new_length);
-    } catch (...) {
-        return 0;
+        auto json_response = nlohmann::json::parse(response.body);
+        return m_context->extract_text_response(json_response);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to parse API response: " + std::string(e.what()));
     }
-    return new_length;
 }
 
-int chat_api::progress_callback(void* clientp, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
-                                curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
-    auto api = static_cast<chat_api*>(clientp);
-    return api->m_cancel_flag.load() ? 1 : 0;
-}
-
-curl_slist* chat_api::setup_curl_options(CURL* curl,
-                                         const std::string& payload_str) {
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    if (m_context->get_llm_provider() == API_PROVIDER::ClaudeAI) {
-        headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
-        headers = curl_slist_append(headers, ("x-api-key: " + context().get_api_key()).c_str());
-    }
-    else {
-        headers = curl_slist_append(headers, ("Authorization: Bearer " + context().get_api_key()).c_str());
+void chat_api::send_message_stream(const std::string& message,
+                                 stream_callback on_chunk,
+                                 completion_callback on_complete,
+                                 progress_callback cancel_check) {
+    if (!m_context->supports_streaming()) {
+        throw std::runtime_error("Streaming is not supported by this provider");
     }
 
-    curl_easy_setopt(curl, CURLOPT_URL, context().get_api_url().c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload_str.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 30L);
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 90L);
+    m_context->clear_messages();
+    m_context->add_user_message(message);
 
-    return headers;
-}
+    // Enable streaming in the request
+    auto request = m_context->build_request();
+    request["stream"] = true;
 
-std::string chat_api::send(const hyni::prompt &prompt,
-                           const std::function<bool()>& should_cancel) {
-
-    context().add_user_message(prompt);
-    json payload = context().generate_payload(prompt.question_type);
-
-    std::string payload_str = payload.dump();
-    struct curl_slist* headers = setup_curl_options(m_curl_handle,
-                                                    payload_str);
-    std::string read_buffer;
-    curl_easy_setopt(m_curl_handle, CURLOPT_WRITEDATA, &read_buffer);
-
-    CURLM* multi_handle = curl_multi_init();
-    curl_multi_add_handle(multi_handle, m_curl_handle);
-
-    int still_running = 1;
-    while (still_running && !m_cancel_flag.load() && !should_cancel()) {
-        CURLMcode mc = curl_multi_perform(multi_handle, &still_running);
-        if (mc) {
-            break;
-        }
-        curl_multi_wait(multi_handle, nullptr, 0, 100, nullptr);
-    }
-
-    curl_slist_free_all(headers);
-    curl_multi_remove_handle(multi_handle, m_curl_handle);
-    curl_multi_cleanup(multi_handle);
-
-    if (m_cancel_flag.load() || should_cancel()) {
-        throw std::runtime_error("Image request cancelled");
-    }
-
-    return read_buffer;
-}
-
-chat_api::api_response chat_api::get_assistant_reply(const std::string& json_response) {
-    try {
-        json response_json = json::parse(json_response);
-
-        // Check for error first
-        if (response_json.contains("error")) {
-            std::string error_msg = response_json["error"]["message"].get<std::string>();
-            return api_response(false, "", error_msg);
-        }
-
-        // Process response in context first (maintains conversation history)
-        context().process_response(response_json);
-
-        // Extract content based on provider
-        std::string content;
-        bool success = false;
-
-        switch (context().get_llm_provider()) {
-        case API_PROVIDER::ClaudeAI: {
-            // Claude format: {"content": [{"type": "text", "text": "..."}]}
-            if (response_json.contains("content") && response_json["content"].is_array()) {
-                for (const auto& item : response_json["content"]) {
-                    if (item.is_object() &&
-                        item["type"] == "text" &&
-                        item.contains("text")) {
-                        content += item["text"].get<std::string>();
-                        success = true;
-                    }
-                }
-            }
-            break;
-        }
-        case API_PROVIDER::DeepSeek:
-        case API_PROVIDER::OpenAI: {
-            // OpenAI/DeepSeek format: {"choices": [{"message": {"content": ...}}]}
-            if (response_json.contains("choices") &&
-                !response_json["choices"].empty() &&
-                response_json["choices"][0].contains("message")) {
-
-                const auto& message = response_json["choices"][0]["message"];
-
-                // Handle both string and array formats
-                if (message["content"].is_string()) {
-                    content = message["content"].get<std::string>();
-                    success = true;
-                }
-                else if (message["content"].is_array()) {
-                    for (const auto& item : message["content"]) {
-                        if (item.is_object() &&
-                            item["type"] == "text" &&
-                            item.contains("text")) {
-                            content += item["text"].get<std::string>();
-                            success = true;
+    m_http_client->post_stream(
+        m_context->get_endpoint(),
+        request,
+        [on_chunk, this](const std::string& chunk) {
+            try {
+                // Handle streaming chunks (implementation depends on provider)
+                if (!chunk.empty() && chunk != "data: [DONE]") {
+                    size_t pos = chunk.find("data: ");
+                    if (pos != std::string::npos) {
+                        std::string json_str = chunk.substr(pos + 6);
+                        if (!json_str.empty()) {
+                            auto json_chunk = nlohmann::json::parse(json_str);
+                            std::string content = m_context->extract_text_response(json_chunk);
+                            on_chunk(content);
                         }
                     }
                 }
+            } catch (...) {
+                // Handle parse errors silently in streaming
             }
+        },
+        [on_complete](const http_response& response) {
+            if (on_complete) {
+                on_complete(response);
+            }
+        },
+        cancel_check
+    );
+}
+
+std::future<std::string> chat_api::send_message_async(const std::string& message) {
+    ensure_http_client();
+
+    return std::async(std::launch::async, [this, message]() {
+        return send_message(message);
+    });
+}
+
+std::string chat_api::send_message(progress_callback cancel_check) {
+    ensure_http_client();
+
+    // Validate we have at least one user message
+    bool has_user_message = false;
+    for (const auto& msg : m_context->get_messages()) {
+        if (msg["role"] == "user") {
+            has_user_message = true;
             break;
         }
-        default:
-            return api_response(false, "", "Unsupported API provider");
-        }
+    }
 
-        if (success && !content.empty()) {
-            return api_response(true, content);
-        }
-        return api_response(false, "", "Malformed API response: missing expected content");
+    if (!has_user_message) {
+        throw std::runtime_error("No user message found in context");
+    }
 
-    } catch (const json::parse_error& e) {
-        return api_response(false, "", std::string("JSON parse error: ") + e.what());
+    auto request = m_context->build_request();
+    m_http_client->set_headers(m_context->get_headers());
+    auto response = m_http_client->post(m_context->get_endpoint(), request, cancel_check);
+
+    if (!response.success) {
+        throw std::runtime_error("API request failed: " + response.error_message);
+    }
+
+    try {
+        auto json_response = nlohmann::json::parse(response.body);
+        return m_context->extract_text_response(json_response);
     } catch (const std::exception& e) {
-        return api_response(false, "", std::string("Error processing response: ") + e.what());
+        throw std::runtime_error("Failed to parse API response: " + std::string(e.what()));
     }
 }
+
+void chat_api::send_message_stream(stream_callback on_chunk,
+                                   completion_callback on_complete,
+                                   progress_callback cancel_check) {
+    if (!m_context->supports_streaming()) {
+        throw std::runtime_error("Streaming is not supported by this provider");
+    }
+
+    // Validate we have at least one user message
+    bool has_user_message = false;
+    for (const auto& msg : m_context->get_messages()) {
+        if (msg["role"] == "user") {
+            has_user_message = true;
+            break;
+        }
+    }
+
+    if (!has_user_message) {
+        throw std::runtime_error("No user message found in context");
+    }
+
+    // Build request with streaming enabled
+    auto request = m_context->build_request(true);
+    m_http_client->set_headers(m_context->get_headers());
+
+    m_http_client->post_stream(
+        m_context->get_endpoint(),
+        request,
+
+        // on_chunk: handle each streamed response chunk
+        [on_chunk, this](const std::string& chunk) {
+            try {
+                std::istringstream stream(chunk);
+                std::string line;
+                while (std::getline(stream, line)) {
+                    if (line.rfind("data: ", 0) == 0) {  // line starts with "data: "
+                        std::string json_str = line.substr(6);
+                        if (json_str == "[DONE]") {
+                            break; // Optional: stop processing after [DONE]
+                        }
+
+                        if (!json_str.empty()) {
+                            auto json_chunk = nlohmann::json::parse(json_str, nullptr, false);
+                            if (!json_chunk.is_discarded()) {
+                                std::string content = m_context->extract_text_response(json_chunk);
+                                if (!content.empty()) {
+                                    on_chunk(content);
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (...) {
+                // Silent fail: you may log this if needed
+            }
+        },
+
+        // on_complete: mark streaming as complete
+        [on_complete](const http_response& response) {
+            if (on_complete) {
+                on_complete(response);
+            }
+        },
+
+        // cancel check
+        cancel_check
+        );
+}
+
+std::future<std::string> chat_api::send_message_async() {
+    return std::async(std::launch::async, [this]() {
+        return send_message();
+    });
+}
+
+void chat_api::ensure_http_client() {
+    if (!m_http_client) {
+        m_http_client = http_client_factory::create_http_client(*m_context);
+    }
+}
+
+http_response chat_api::send_request(const nlohmann::json& request, progress_callback cancel_check) {
+    return m_http_client->post(m_context->get_endpoint(), request, cancel_check);
+}
+
+} // namespace hyni

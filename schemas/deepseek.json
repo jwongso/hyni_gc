@@ -13,7 +13,8 @@
   "authentication": {
     "type": "header",
     "key_name": "Authorization",
-    "key_placeholder": "Bearer <YOUR_DEEPSEEK_API_KEY>"
+    "key_prefix": "Bearer ",
+    "key_placeholder": "<YOUR_DEEPSEEK_API_KEY>"
   },
   "headers": {
     "required": {

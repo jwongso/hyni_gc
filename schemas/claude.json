@@ -17,7 +17,7 @@
   },
   "headers": {
     "required": {
-      "X-API-Key": "<YOUR_ANTHROPIC_API_KEY>",
+      "x-api-key": "<YOUR_ANTHROPIC_API_KEY>",
       "Anthropic-Version": "2023-06-01",
       "Content-Type": "application/json"
     },

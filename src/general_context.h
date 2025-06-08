@@ -1,9 +1,12 @@
+#pragma once
+
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 #include <optional>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
 
 namespace hyni {
@@ -41,6 +44,7 @@ public:
     general_context& set_system_message(const std::string& system_text);
     general_context& set_parameter(const std::string& key, const nlohmann::json& value);
     general_context& set_parameters(const std::unordered_map<std::string, nlohmann::json>& params);
+    general_context& set_api_key(const std::string& api_key);
 
     // Message management
     general_context& add_user_message(const std::string& content, const std::optional<std::string>& media_type = {},
@@ -51,7 +55,7 @@ public:
                     const std::optional<std::string>& media_data = {});
 
     // Request building and response handling
-    nlohmann::json build_request();
+    nlohmann::json build_request(bool streaming = false);
     std::string extract_text_response(const nlohmann::json& response);
     nlohmann::json extract_full_response(const nlohmann::json& response);
     std::string extract_error(const nlohmann::json& response);
@@ -60,12 +64,14 @@ public:
     void reset();
     void clear_messages();
     void clear_parameters();
+    bool has_api_key() const { return !m_api_key.empty(); }
 
     // Getters for introspection
     const nlohmann::json& get_schema() const { return m_schema; }
     const std::string& get_provider_name() const { return m_provider_name; }
     const std::string& get_endpoint() const { return m_endpoint; }
     const std::unordered_map<std::string, std::string>& get_headers() const { return m_headers; }
+
     std::vector<std::string> get_supported_models() const;
     bool supports_multimodal() const;
     bool supports_streaming() const;
@@ -74,6 +80,32 @@ public:
     // Validation
     bool is_valid_request() const;
     std::vector<std::string> get_validation_errors() const;
+
+    // Parameters
+    const std::unordered_map<std::string, nlohmann::json>& get_parameters() const {
+        return m_parameters;
+    }
+    nlohmann::json get_parameter(const std::string& key) const;
+    template<typename T>
+    T get_parameter_as(const std::string& key) const {
+        auto param = get_parameter(key);
+        try {
+            return param.get<T>();
+        } catch (const nlohmann::json::exception& e) {
+            throw validation_exception("Parameter '" + key +
+                                       "' cannot be converted to requested type: " + e.what());
+        }
+    }
+    template<typename T>
+    T get_parameter_as(const std::string& key, const T& default_value) const {
+        if (!has_parameter(key)) {
+            return default_value;
+        }
+        return get_parameter_as<T>(key);
+    }
+    bool has_parameter(const std::string& key) const;
+
+    const std::vector<nlohmann::json>& get_messages() const { return m_messages; }
 
 private:
     // Core data members
@@ -88,6 +120,8 @@ private:
     std::optional<std::string> m_system_message;
     std::vector<nlohmann::json> m_messages;
     std::unordered_map<std::string, nlohmann::json> m_parameters;
+    std::string m_api_key;
+    std::unordered_set<std::string> m_valid_roles;
 
     // Cached paths and formats
     std::vector<std::string> m_text_path;

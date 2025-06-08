@@ -111,16 +111,7 @@ string(
 add_compile_options("${opts}")
 
 add_library(${PROJECT_NAME} SHARED
-    src/model_context.h
-    src/openai_context.h
-    src/openai_context.cpp
-    src/deepseek_context.h
-    src/deepseek_context.cpp
-    src/claudeai_context.h
-    src/claudeai_context.cpp
     src/response_utils.h
-    src/chat_api.cpp
-    src/chat_api.h
     src/config.h
     src/websocket_client.cpp
     src/websocket_client.h
@@ -130,6 +121,12 @@ add_library(${PROJECT_NAME} SHARED
     src/schema_manager.h
     src/general_context.cpp
     src/schema_manager.cpp
+    src/http_client.h
+    src/http_client.cpp
+    src/http_client_factory.h
+    src/http_client_factory.cpp
+    src/chat_api.h
+    src/chat_api.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -145,15 +142,15 @@ find_package(GTest REQUIRED)
 enable_testing()
 
 add_executable(${PROJECT_NAME}_TEST
-    tests/chat_api_test.cpp
     tests/response_utils_test.cpp
     tests/websocket_client_test.cpp
     tests/general_context_func_test.cpp
+    tests/chat_api_func_test.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}_TEST
     ${PROJECT_NAME}
-    GTest::gtest
+    GTest::gtest_main
     GTest::gmock
     curl
 )

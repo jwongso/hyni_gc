@@ -80,6 +80,12 @@ void general_context::cache_schema_elements() {
     m_provider_name = m_schema["provider"]["name"].get<std::string>();
     m_endpoint = m_schema["api"]["endpoint"].get<std::string>();
 
+    if (m_schema.contains("message_roles")) {
+        for (const auto& role : m_schema["message_roles"]) {
+            m_valid_roles.insert(role.get<std::string>());
+        }
+    }
+
     // Cache request template
     m_request_template = m_schema["request_template"];
 
@@ -101,9 +107,36 @@ void general_context::cache_schema_elements() {
 }
 
 void general_context::build_headers() {
+    m_headers.clear();
+
+    // 1. Process required headers
     if (m_schema.contains("headers") && m_schema["headers"].contains("required")) {
         for (const auto& [key, value] : m_schema["headers"]["required"].items()) {
-            m_headers[key] = value.get<std::string>();
+            std::string header_value = value.get<std::string>();
+            const std::string placeholder = m_schema["authentication"]["key_placeholder"].get<std::string>();
+
+            if (header_value.find(placeholder) != std::string::npos) {
+                std::string prefix = "";
+                if (m_schema["authentication"].contains("key_prefix")) {
+                    prefix = m_schema["authentication"]["key_prefix"].get<std::string>();
+                }
+                header_value.replace(
+                    header_value.find(placeholder),
+                    placeholder.length(),
+                    m_api_key
+                    );
+            }
+
+            m_headers[key] = header_value;
+        }
+    }
+
+    // 2. Process optional headers (only if values are provided)
+    if (m_schema.contains("headers") && m_schema["headers"].contains("optional")) {
+        for (const auto& [key, value] : m_schema["headers"]["optional"].items()) {
+            if (!value.is_null() && !value.get<std::string>().empty()) {
+                m_headers[key] = value.get<std::string>();
+            }
         }
     }
 }
@@ -154,6 +187,16 @@ general_context &general_context::set_parameters(const std::unordered_map<std::s
     for (const auto& [key, value] : params) {
         set_parameter(key, value);
     }
+    return *this;
+}
+
+general_context& general_context::set_api_key(const std::string& api_key) {
+    if (api_key.empty()) {
+        throw validation_exception("API key cannot be empty");
+    }
+    m_api_key = api_key;
+    build_headers(); // Rebuild headers with new API key
+
     return *this;
 }
 
@@ -221,7 +264,7 @@ nlohmann::json general_context::create_image_content(const std::string& media_ty
     return content;
 }
 
-nlohmann::json general_context::build_request() {
+nlohmann::json general_context::build_request(bool streaming) {
     nlohmann::json request = m_request_template;
 
     // Set model
@@ -231,12 +274,14 @@ nlohmann::json general_context::build_request() {
 
     // Set system message if supported
     if (m_system_message && supports_system_messages()) {
-        auto field = m_schema["system_message"]["field"].get<std::string>();
-        if (field == "system") {
-            request["system"] = *m_system_message;
-        } else if (field == "messages") {
+        const bool system_in_roles = m_valid_roles.find("system") != m_valid_roles.end();
+
+        if (system_in_roles) {
+            // OpenAI style - system role supported in messages
             m_messages.insert(m_messages.begin(), create_message("system", *m_system_message));
-            request["messages"] = m_messages;
+        } else {
+            // Claude style - use separate system field
+            request["system"] = *m_system_message;
         }
     }
 
@@ -249,11 +294,17 @@ nlohmann::json general_context::build_request() {
     }
 
     // Apply config defaults
-    if (m_config.default_max_tokens && !request.contains("max_tokens")) {
+    if (m_config.default_max_tokens || !request.contains("max_tokens")) {
         request["max_tokens"] = *m_config.default_max_tokens;
     }
-    if (m_config.default_temperature && !request.contains("temperature")) {
+    if (m_config.default_temperature || !request.contains("temperature")) {
         request["temperature"] = *m_config.default_temperature;
+    }
+
+    if (streaming && m_schema["features"]["streaming"].get<bool>()) {
+        request["stream"] = true;
+    } else {
+        request["stream"] = false;
     }
 
     remove_nulls_recursive(request);
@@ -389,6 +440,17 @@ std::vector<std::string> general_context::get_validation_errors() const {
 
     return errors;
 }
+bool general_context::has_parameter(const std::string& key) const {
+    return m_parameters.find(key) != m_parameters.end();
+}
+
+nlohmann::json general_context::get_parameter(const std::string& key) const {
+    auto it = m_parameters.find(key);
+    if (it == m_parameters.end()) {
+        throw validation_exception("Parameter '" + key + "' not found");
+    }
+    return it->second;
+}
 
 void general_context::validate_message(const nlohmann::json& message) const {
     if (!message.contains("role") || !message.contains("content")) {
@@ -396,18 +458,8 @@ void general_context::validate_message(const nlohmann::json& message) const {
     }
 
     std::string role = message["role"].get<std::string>();
-    if (m_schema.contains("message_roles")) {
-        auto valid_roles = m_schema["message_roles"];
-        bool valid_role = false;
-        for (const auto& valid_role_item : valid_roles) {
-            if (valid_role_item.get<std::string>() == role) {
-                valid_role = true;
-                break;
-            }
-        }
-        if (!valid_role) {
-            throw validation_exception("Invalid message role: " + role);
-        }
+    if (!m_valid_roles.empty() && m_valid_roles.find(role) == m_valid_roles.end()) {
+        throw validation_exception("Invalid message role: " + role);
     }
 }
 
@@ -480,6 +532,7 @@ void general_context::reset() {
 
 void general_context::clear_messages() {
     m_messages.clear();
+    m_system_message.reset();
 }
 
 void general_context::clear_parameters() {
