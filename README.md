@@ -429,7 +429,8 @@ MIT License - Use freely in commercial and open-source projects.
 **Ready to supercharge your AI conversations?** 
 
 ```cpp
-#include "hyni.hpp"
+#include "chat_api.h"
+#include "general_context.h"
 
 auto context = std::make_unique<hyni::general_context>("claude");
 hyni::chat_api chat(std::move(context));
