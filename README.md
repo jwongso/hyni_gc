@@ -36,12 +36,14 @@ auto response = hyni::chat("Explain quantum computing")
 
 ### The Simplest Way
 ```cpp
-#include "hyni.hpp"
+#include "general_context.h"
+#include "chat_api.h"
 using namespace hyni;
 
 // Create a context and chat API
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("openai");
 chat_api chat(std::move(context));
+chat.get_context().set_api_key("XYZ");
 
 // One-liner conversations
 std::string answer = chat.send_message("What is recursion?");
