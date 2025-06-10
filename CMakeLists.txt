@@ -146,6 +146,7 @@ add_executable(${PROJECT_NAME}_TEST
     tests/websocket_client_test.cpp
     tests/general_context_func_test.cpp
     tests/chat_api_func_test.cpp
+    tests/schema_manager_test.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}_TEST

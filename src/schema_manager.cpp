@@ -50,7 +50,8 @@ std::vector<std::string> schema_manager::get_available_providers() const {
         for (const auto& entry : std::filesystem::directory_iterator(m_schema_directory)) {
             if (entry.is_regular_file() && entry.path().extension() == ".json") {
                 std::string provider_name = entry.path().stem().string();
-                if (std::find(providers.begin(), providers.end(), provider_name) == providers.end()) {
+                if (m_provider_paths.find(provider_name) == m_provider_paths.end() &&
+                    std::find(providers.begin(), providers.end(), provider_name) == providers.end()) {
                     providers.push_back(provider_name);
                 }
             }

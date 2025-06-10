@@ -555,7 +555,7 @@ TEST_F(ChatAPITest, CancellationCallback) {
         try {
             test_thread = std::thread([api = api.get(), cancel_callback, operation_completed]() {
                 try {
-                    api->send_message("Test message", cancel_callback);
+                    std::string dummy = api->send_message("Test message", cancel_callback);
                 } catch (...) {
                     // Network failure or cancellation — expected
                 }
@@ -657,9 +657,9 @@ TEST_F(ChatAPITest, SendMessageWithoutParameterFailsWithNoUserMessage) {
         }
         // Only system message, no user message
         api->get_context().set_system_message("You are helpful");
-
+        std::string dummy;
         EXPECT_THROW(
-            api->send_message(),
+            dummy = api->send_message(),
             std::runtime_error
             );
     }
