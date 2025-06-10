@@ -9,11 +9,17 @@
 
 ```cpp
 // One line to rule them all - works with ANY LLM provider
-auto response = hyni::chat("Explain quantum computing")
-    .provider("claude")           // or "openai", "deepseek", "mistral"
-    .temperature(0.7)
-    .max_tokens(500)
-    .send();
+#include "general_context.h"
+#include "chat_api.h"
+auto context = std::make_unique<general_context>("openai"); //mistral, claude, deepSeek
+chat_api chat(std::move(context));
+chat.get_context().set_api_key("XYZ")
+                  .temperature(0.3)
+                  .max_tokens(500)
+                  .set_system_message("You are a helpful professor in quantum theory");
+
+// One-liner conversations
+std::string answer = chat.send_message("What is quantum mechanic?");
 ```
 
 **No more provider-specific code.** No more JSON wrestling. Just pure, elegant AI conversations.
@@ -41,10 +47,9 @@ auto response = hyni::chat("Explain quantum computing")
 using namespace hyni;
 
 // Create a context and chat API
-auto context = std::make_unique<general_context>("openai");
+auto context = std::make_unique<general_context>("claude");
 chat_api chat(std::move(context));
-chat.get_context().set_api_key("XYZ");
-
+chat.get_context().set_api_key("XYZ").set_system_message("You are a friendly software engineer")
 // One-liner conversations
 std::string answer = chat.send_message("What is recursion?");
 ```
@@ -52,15 +57,18 @@ std::string answer = chat.send_message("What is recursion?");
 ### Builder Pattern with Context
 ```cpp
 // Set up your context
-auto context = std::make_unique<general_context>("claude");
-context->set_system_message("You are a helpful coding assistant")
+auto context = std::make_unique<general_context>("openai");
+chat_api chat(std::move(context));
+chat.get_context().set_system_message("You are an overly enthusiastic barista bot")
        ->set_parameter("temperature", 0.8)
        ->set_parameter("max_tokens", 1000)
        ->set_api_key("1234567890");
 
-chat_api chat(std::move(context));
+std::string response = chat.send_message("What’s the difference between a macchiato and a cortado?");
+```
 
-// Reuse the same chat for multiple questions
+### Reuse the same chat for multiple or multi-turn questions
+```cpp
 std::string response = chat.send_message("Write a C++ class for a stack");
 chat.get_context().add_assistant_message(response);
 response = chat.send_message("Now add error handling");
@@ -73,12 +81,12 @@ response = chat.send_message("And now, explain me the time and space complexitie
 ### Advanced Context Management
 ```cpp
 auto context = std::make_unique<general_context>("claude");
-context->set_system_message("You are an expert software architect");
+context->set_system_message("You are an expert in German tax system");
 
 // Build conversations naturally
-context->add_user_message("I need to design a microservice");
-context->add_assistant_message("I'd be happy to help! What's the service for?");
-context->add_user_message("User authentication and JWT tokens");
+context->add_user_message("Can you help me?");
+context->add_assistant_message("I'd be happy to help! What's your question?");
+context->add_user_message("What is the difference between child allowance and child benefit in tax matters?");
 
 chat_api chat(std::move(context));
 auto response = chat.send_message(); // Send with existing context
@@ -90,10 +98,10 @@ auto response = chat.send_message(); // Send with existing context
 
 ### Synchronous (Simple)
 ```cpp
-auto context = std::make_unique<general_context>("openai");
+auto context = std::make_unique<general_context>("deepseek");
 chat_api chat(std::move(context));
 
-std::string result = chat.send_message("Explain async programming");
+std::string result = chat.send_message("Explain how to breed kois");
 std::cout << result << std::endl;
 ```
 
@@ -102,7 +110,7 @@ std::cout << result << std::endl;
 auto context = std::make_unique<general_context>("claude");
 chat_api chat(std::move(context));
 
-auto future = chat.send_message_async("Generate a story about robots");
+auto future = chat.send_message_async("Generate a story about AI");
 
 // Do other work...
 std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -113,7 +121,7 @@ std::string story = future.get();
 
 ### Streaming (Real-time)
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("openai");
 chat_api chat(std::move(context));
 
 chat.send_message_stream("Write a long technical article",
@@ -176,7 +184,7 @@ chat_api chat(std::move(context));
 // Build conversation step by step
 chat.get_context().add_user_message("Hello!");
 chat.get_context().add_assistant_message("Hi! How can I help you?");
-chat.get_context().add_user_message("Tell me about C++ smart pointers");
+chat.get_context().add_user_message("Tell me about the meaning of life");
 
 std::string response = chat.send_message();
 ```
