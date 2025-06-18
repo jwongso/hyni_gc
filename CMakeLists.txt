@@ -118,9 +118,10 @@ add_library(${PROJECT_NAME} SHARED
     src/logger.cpp
     src/logger.h
     src/general_context.h
-    src/schema_manager.h
+    src/schema_registry.h
     src/general_context.cpp
-    src/schema_manager.cpp
+    src/context_factory.h
+
     src/http_client.h
     src/http_client.cpp
     src/http_client_factory.h

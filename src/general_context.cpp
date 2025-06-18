@@ -1,3 +1,14 @@
+// -------------------------------------------------------------------------------------------------
+//
+// Copyright (C) all of the contributors. All rights reserved.
+//
+// This software, including documentation, is protected by copyright controlled by
+// contributors. All rights are reserved. Copying, including reproducing, storing,
+// adapting or translating, any or all of this material requires the prior written
+// consent of all contributors.
+//
+// -------------------------------------------------------------------------------------------------
+
 #include "general_context.h"
 #include "response_utils.h"
 #include <fstream>
@@ -5,7 +16,7 @@
 #include <algorithm>
 #include <sstream>
 
-
+namespace {
 void remove_nulls_recursive(nlohmann::json& j) {
     if (j.is_object()) {
         for (auto it = j.begin(); it != j.end(); ) {
@@ -22,6 +33,7 @@ void remove_nulls_recursive(nlohmann::json& j) {
         }
     }
 }
+} // anonymous namespace
 
 namespace hyni {
 
@@ -49,7 +61,8 @@ void general_context::load_schema(const std::string& schema_path) {
 
 void general_context::validate_schema() {
     // Check required top-level fields
-    std::vector<std::string> required_fields = {"provider", "api", "request_template", "message_format", "response_format"};
+    std::vector<std::string> required_fields = {"provider", "api", "request_template",
+                                                "message_format", "response_format"};
 
     for (const auto& field : required_fields) {
         if (!m_schema.contains(field)) {
@@ -113,18 +126,26 @@ void general_context::build_headers() {
     if (m_schema.contains("headers") && m_schema["headers"].contains("required")) {
         for (const auto& [key, value] : m_schema["headers"]["required"].items()) {
             std::string header_value = value.get<std::string>();
-            const std::string placeholder = m_schema["authentication"]["key_placeholder"].get<std::string>();
 
-            if (header_value.find(placeholder) != std::string::npos) {
-                std::string prefix = "";
+            if (m_schema.contains("authentication") &&
+                m_schema["authentication"].contains("key_placeholder")) {
+
+                const std::string placeholder =
+                    m_schema["authentication"]["key_placeholder"].get<std::string>();
+
+                // Prepare replacement string (with optional prefix)
+                std::string replacement = m_api_key;
                 if (m_schema["authentication"].contains("key_prefix")) {
-                    prefix = m_schema["authentication"]["key_prefix"].get<std::string>();
+                    replacement = m_schema["authentication"]["key_prefix"].get<std::string>() +
+                                  m_api_key;
                 }
-                header_value.replace(
-                    header_value.find(placeholder),
-                    placeholder.length(),
-                    m_api_key
-                    );
+
+                // Replace all occurrences of placeholder
+                size_t pos = 0;
+                while ((pos = header_value.find(placeholder, pos)) != std::string::npos) {
+                    header_value.replace(pos, placeholder.length(), replacement);
+                    pos += replacement.length(); // Skip past replacement
+                }
             }
 
             m_headers[key] = header_value;
@@ -134,12 +155,13 @@ void general_context::build_headers() {
     // 2. Process optional headers (only if values are provided)
     if (m_schema.contains("headers") && m_schema["headers"].contains("optional")) {
         for (const auto& [key, value] : m_schema["headers"]["optional"].items()) {
-            if (!value.is_null() && !value.get<std::string>().empty()) {
+            if (!value.is_null() && value.is_string() && !value.get<std::string>().empty()) {
                 m_headers[key] = value.get<std::string>();
             }
         }
     }
 }
+
 
 void general_context::apply_defaults() {
     if (m_schema.contains("models") && m_schema["models"].contains("default")) {
@@ -169,13 +191,15 @@ general_context& general_context::set_model(const std::string& model) {
 
 general_context& general_context::set_system_message(const std::string& system_text) {
     if (!supports_system_messages() && m_config.enable_validation) {
-        throw validation_exception("Provider '" + m_provider_name + "' does not support system messages");
+        throw validation_exception("Provider '" + m_provider_name +
+                                   "' does not support system messages");
     }
     m_system_message = system_text;
     return *this;
 }
 
-general_context& general_context::set_parameter(const std::string& key, const nlohmann::json& value) {
+general_context& general_context::set_parameter(const std::string& key,
+                                                const nlohmann::json& value) {
     if (m_config.enable_validation) {
         validate_parameter(key, value);
     }
@@ -183,7 +207,8 @@ general_context& general_context::set_parameter(const std::string& key, const nl
     return *this;
 }
 
-general_context &general_context::set_parameters(const std::unordered_map<std::string, nlohmann::json>& params) {
+general_context &general_context::set_parameters(
+    const std::unordered_map<std::string, nlohmann::json>& params) {
     for (const auto& [key, value] : params) {
         set_parameter(key, value);
     }
@@ -234,7 +259,8 @@ nlohmann::json general_context::create_message(const std::string& role, const st
     // Add image if provided
     if (media_type && media_data) {
         if (!supports_multimodal() && m_config.enable_validation) {
-            throw validation_exception("Provider '" + m_provider_name + "' does not support multimodal content");
+            throw validation_exception("Provider '" + m_provider_name +
+                                       "' does not support multimodal content");
         }
         content_array.push_back(create_image_content(*media_type, *media_data));
     }
@@ -249,7 +275,8 @@ nlohmann::json general_context::create_text_content(const std::string& text) {
     return content;
 }
 
-nlohmann::json general_context::create_image_content(const std::string& media_type, const std::string& data) {
+nlohmann::json general_context::create_image_content(const std::string& media_type,
+                                                     const std::string& data) {
     nlohmann::json content = m_image_content_format;
     content["source"]["media_type"] = media_type;
 
@@ -266,6 +293,7 @@ nlohmann::json general_context::create_image_content(const std::string& media_ty
 
 nlohmann::json general_context::build_request(bool streaming) {
     nlohmann::json request = m_request_template;
+    auto messages = m_messages;
 
     // Set model
     if (!m_model_name.empty()) {
@@ -278,7 +306,7 @@ nlohmann::json general_context::build_request(bool streaming) {
 
         if (system_in_roles) {
             // OpenAI style - system role supported in messages
-            m_messages.insert(m_messages.begin(), create_message("system", *m_system_message));
+            messages.insert(m_messages.begin(), create_message("system", *m_system_message));
         } else {
             // Claude style - use separate system field
             request["system"] = *m_system_message;
@@ -286,25 +314,29 @@ nlohmann::json general_context::build_request(bool streaming) {
     }
 
     // Set messages
-    request["messages"] = m_messages;
+    request["messages"] = std::move(messages);
 
-    // Apply custom parameters
+    // Apply custom parameters FIRST (so they take precedence)
     for (const auto& [key, value] : m_parameters) {
         request[key] = value;
     }
 
-    // Apply config defaults
-    if (m_config.default_max_tokens || !request.contains("max_tokens")) {
+    // Apply config defaults only if not already set
+    if (m_config.default_max_tokens && !request.contains("max_tokens")) {
         request["max_tokens"] = *m_config.default_max_tokens;
     }
-    if (m_config.default_temperature || !request.contains("temperature")) {
+    if (m_config.default_temperature && !request.contains("temperature")) {
         request["temperature"] = *m_config.default_temperature;
     }
 
-    if (streaming && m_schema["features"]["streaming"].get<bool>()) {
-        request["stream"] = true;
-    } else {
-        request["stream"] = false;
+    // Set streaming: user parameter takes precedence over function parameter
+    if (m_parameters.find("stream") == m_parameters.end()) {
+        // User hasn't explicitly set stream parameter, use function parameter
+        if (streaming && m_schema["features"]["streaming"].get<bool>()) {
+            request["stream"] = true;
+        } else {
+            request["stream"] = false;
+        }
     }
 
     remove_nulls_recursive(request);
@@ -323,7 +355,8 @@ std::string general_context::extract_text_response(const nlohmann::json& respons
 
 nlohmann::json general_context::extract_full_response(const nlohmann::json& response) {
     try {
-        std::vector<std::string> content_path = parse_json_path(m_schema["response_format"]["success"]["content_path"]);
+        std::vector<std::string> content_path = parse_json_path(
+            m_schema["response_format"]["success"]["content_path"]);
         return resolve_path(response, content_path);
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to extract full response: " + std::string(e.what()));
@@ -389,22 +422,37 @@ std::vector<std::string> general_context::get_supported_models() const {
     return models;
 }
 
-bool general_context::supports_multimodal() const {
-    return m_schema.contains("multimodal") &&
-           m_schema["multimodal"].contains("supported") &&
-           m_schema["multimodal"]["supported"].get<bool>();
+bool general_context::supports_multimodal() const noexcept {
+    auto multimodal_it = m_schema.find("multimodal");
+    if (multimodal_it != m_schema.end() && multimodal_it->is_object()) {
+        auto supported_it = multimodal_it->find("supported");
+        if (supported_it != multimodal_it->end() && supported_it->is_boolean()) {
+            return supported_it->get<bool>();
+        }
+    }
+    return false;
 }
 
-bool general_context::supports_streaming() const {
-    return m_schema.contains("features") &&
-           m_schema["features"].contains("streaming") &&
-           m_schema["features"]["streaming"].get<bool>();
+bool general_context::supports_streaming() const noexcept {
+    auto features_it = m_schema.find("features");
+    if (features_it != m_schema.end() && features_it->is_object()) {
+        auto streaming_it = features_it->find("streaming");
+        if (streaming_it != features_it->end() && streaming_it->is_boolean()) {
+            return streaming_it->get<bool>();
+        }
+    }
+    return false;
 }
 
-bool general_context::supports_system_messages() const {
-    return m_schema.contains("system_message") &&
-           m_schema["system_message"].contains("supported") &&
-           m_schema["system_message"]["supported"].get<bool>();
+bool general_context::supports_system_messages() const noexcept {
+    auto system_it = m_schema.find("system_message");
+    if (system_it != m_schema.end() && system_it->is_object()) {
+        auto supported_it = system_it->find("supported");
+        if (supported_it != system_it->end() && supported_it->is_boolean()) {
+            return supported_it->get<bool>();
+        }
+    }
+    return false;
 }
 
 bool general_context::is_valid_request() const {
@@ -440,7 +488,8 @@ std::vector<std::string> general_context::get_validation_errors() const {
 
     return errors;
 }
-bool general_context::has_parameter(const std::string& key) const {
+
+bool general_context::has_parameter(const std::string& key) const noexcept {
     return m_parameters.find(key) != m_parameters.end();
 }
 
@@ -463,12 +512,40 @@ void general_context::validate_message(const nlohmann::json& message) const {
     }
 }
 
-void general_context::validate_parameter(const std::string& key, const nlohmann::json& value) const {
+void general_context::validate_parameter(const std::string& key,
+                                         const nlohmann::json& value) const {
+    if (value.is_null()) {
+        throw validation_exception("Parameter '" + key + "' cannot be null");
+    }
+
     if (!m_schema.contains("parameters") || !m_schema["parameters"].contains(key)) {
-        return; // Parameter not defined in schema, allow it
+        return; // Parameter not defined in schema
     }
 
     auto param_def = m_schema["parameters"][key];
+
+    // Add string length validation
+    if (value.is_string() && param_def.contains("max_length")) {
+        size_t max_len = param_def["max_length"].get<size_t>();
+        if (value.get<std::string>().length() > max_len) {
+            throw validation_exception("Parameter '" + key + "' exceeds maximum length of " +
+                                       std::to_string(max_len));
+        }
+    }
+
+    // Add enum validation
+    if (param_def.contains("enum")) {
+        bool found = false;
+        for (const auto& allowed : param_def["enum"]) {
+            if (value == allowed) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw validation_exception("Parameter '" + key + "' has invalid value");
+        }
+    }
 
     // Type validation
     if (param_def.contains("type")) {
@@ -490,52 +567,93 @@ void general_context::validate_parameter(const std::string& key, const nlohmann:
     if (value.is_number() && param_def.contains("min")) {
         double min_val = param_def["min"].get<double>();
         if (value.get<double>() < min_val) {
-            throw validation_exception("Parameter '" + key + "' must be >= " + std::to_string(min_val));
+            throw validation_exception("Parameter '" + key + "' must be >= " +
+                                       std::to_string(min_val));
         }
     }
 
     if (value.is_number() && param_def.contains("max")) {
         double max_val = param_def["max"].get<double>();
         if (value.get<double>() > max_val) {
-            throw validation_exception("Parameter '" + key + "' must be <= " + std::to_string(max_val));
+            throw validation_exception("Parameter '" + key + "' must be <= " +
+                                       std::to_string(max_val));
         }
     }
 }
 
 std::string general_context::encode_image_to_base64(const std::string& image_path) const {
+    // Check existence and size first
+    std::filesystem::path path(image_path);
+    if (!std::filesystem::exists(path)) {
+        throw std::runtime_error("Image file does not exist: " + image_path);
+    }
+
+    auto file_size = std::filesystem::file_size(path);
+    const size_t MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB limit
+
+    if (file_size > MAX_IMAGE_SIZE) {
+        throw std::runtime_error("Image file too large: " + std::to_string(file_size) + " bytes");
+    }
+
     std::ifstream file(image_path, std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Failed to open image file: " + image_path);
     }
 
-    std::vector<char> buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::vector<char> buffer((std::istreambuf_iterator<char>(file)),
+                             std::istreambuf_iterator<char>());
 
-    // Use base64 encoding library (you'll need to include one)
-    return response_utils::base64_encode(reinterpret_cast<const unsigned char*>(buffer.data()), buffer.size());
+    return response_utils::base64_encode(reinterpret_cast<const unsigned char*>(buffer.data()),
+                                         buffer.size());
 }
 
-bool general_context::is_base64_encoded(const std::string& data) const {
-    // Simple heuristic: base64 strings are typically much longer and contain only valid base64 chars
-    if (data.length() < 100) return false; // Too short to be image data
+bool general_context::is_base64_encoded(const std::string& data) const noexcept {
+    if (data.empty()) return false;
 
-    const std::string base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    return data.find_first_not_of(base64_chars) == std::string::npos;
+    // Check for data URI scheme (e.g., "data:image/png;base64,...")
+    if (data.starts_with("data:") && data.find(";base64,") != std::string::npos) {
+        return true;
+    }
+
+    // Check for valid Base64 characters (ignoring whitespace)
+    constexpr std::string_view base64_chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+
+    size_t padding = 0;
+    size_t data_len = 0;  // Counts non-whitespace chars
+
+    for (char c : data) {
+        if (std::isspace(c)) continue;  // Skip whitespace
+        if (base64_chars.find(c) == std::string_view::npos) {
+            return false;  // Invalid character
+        }
+        if (c == '=') {
+            if (++padding > 2) return false;  // Max 2 padding chars
+        }
+        data_len++;
+    }
+
+    // Validate length and padding (Base64 length must be divisible by 4)
+    return (data_len % 4 == 0) && (padding != 1);  // 1 padding char is invalid
 }
 
 void general_context::reset() {
-    clear_messages();
+    clear_user_messages();
+    clear_system_message();
     clear_parameters();
-    m_system_message.reset();
     m_model_name.clear();
     apply_defaults();
 }
 
-void general_context::clear_messages() {
+void general_context::clear_user_messages() noexcept {
     m_messages.clear();
+}
+
+void general_context::clear_system_message() noexcept {
     m_system_message.reset();
 }
 
-void general_context::clear_parameters() {
+void general_context::clear_parameters() noexcept {
     m_parameters.clear();
 }
 

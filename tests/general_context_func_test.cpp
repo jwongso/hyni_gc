@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
-#include "../src/schema_manager.h"
+#include "../src/schema_registry.h"
+#include "../src/context_factory.h"
 #include "../src/config.h"
 #include <nlohmann/json.hpp>
 #include <cstdlib>
@@ -173,7 +174,6 @@ protected:
         // Get API key from environment
         const char* api_key = std::getenv("CL_API_KEY");
         if (!api_key) {
-
             fs::path rc_path = fs::path(std::getenv("HOME")) / ".hynirc";
 
             if (fs::exists(rc_path)) {
@@ -190,12 +190,14 @@ protected:
         }
         m_api_key = api_key;
 
-        // Create test schema directory and copy claude.json
+        // Create schema registry with test schema directory
         m_test_schema_dir = "../schemas";
+        m_registry = schema_registry::create()
+                         .set_schema_directory(m_test_schema_dir)
+                         .build();
 
-        // Setup schema manager
-        auto& manager = schema_manager::get_instance();
-        manager.set_schema_directory(m_test_schema_dir);
+        // Create context factory
+        m_factory = std::make_shared<context_factory>(m_registry);
 
         // Create context with validation enabled
         context_config config;
@@ -203,14 +205,15 @@ protected:
         config.default_max_tokens = 100;
         config.default_temperature = 0.3;
 
-        m_context = manager.create_context("claude", config);
-
-        // Replace API key placeholder in headers
-        auto request = m_context->build_request();
-        // We'll need to handle API key injection at request time
+        m_context = m_factory->create_context("claude", config);
+        m_context->set_api_key(m_api_key);
     }
 
     void TearDown() override {
+        // Clean up any temporary files
+        if (fs::exists("test_image.png")) {
+            fs::remove("test_image.png");
+        }
     }
 
     void create_test_image() {
@@ -234,18 +237,18 @@ protected:
 
     std::string m_api_key;
     std::string m_test_schema_dir;
+    std::shared_ptr<schema_registry> m_registry;
+    std::shared_ptr<context_factory> m_factory;
     std::unique_ptr<general_context> m_context;
 };
 
 // Test basic schema loading and context creation
-TEST_F(GeneralContextFunctionalTest, SchemaManagerBasicFunctionality) {
-    auto& manager = schema_manager::get_instance();
-
+TEST_F(GeneralContextFunctionalTest, SchemaRegistryBasicFunctionality) {
     // Test provider availability
-    EXPECT_TRUE(manager.is_provider_available("claude"));
+    EXPECT_TRUE(m_registry->is_provider_available("claude"));
 
     // Test available providers list
-    auto providers = manager.get_available_providers();
+    auto providers = m_registry->get_available_providers();
     EXPECT_FALSE(providers.empty());
     EXPECT_NE(std::find(providers.begin(), providers.end(), "claude"), providers.end());
 
@@ -254,6 +257,116 @@ TEST_F(GeneralContextFunctionalTest, SchemaManagerBasicFunctionality) {
     EXPECT_TRUE(m_context->supports_multimodal());
     EXPECT_TRUE(m_context->supports_system_messages());
     EXPECT_TRUE(m_context->supports_streaming());
+}
+
+// Test context factory functionality
+TEST_F(GeneralContextFunctionalTest, ContextFactoryFunctionality) {
+    // Test cache stats after first context creation
+    auto stats = m_factory->get_cache_stats();
+    EXPECT_GE(stats.cache_size, 1);
+
+    // Create another context for the same provider - should use cache
+    auto context2 = m_factory->create_context("claude");
+    auto stats2 = m_factory->get_cache_stats();
+    EXPECT_EQ(stats2.hit_count, stats.hit_count + 1);
+
+    // Verify context is properly initialized
+    EXPECT_EQ(context2->get_provider_name(), "claude");
+    EXPECT_EQ(context2->get_endpoint(), m_context->get_endpoint());
+}
+
+// Test thread-local context
+TEST_F(GeneralContextFunctionalTest, ThreadLocalContext) {
+    // Get thread-local context
+    auto& tl_context = m_factory->get_thread_local_context("claude");
+    tl_context.set_api_key(m_api_key);
+
+    // Add a message to identify this context
+    tl_context.add_user_message("Thread-local test");
+
+    // Verify the context works properly
+    EXPECT_EQ(tl_context.get_provider_name(), "claude");
+    EXPECT_FALSE(tl_context.get_messages().empty());
+    EXPECT_EQ(tl_context.get_messages()[0]["content"][0]["text"].get<std::string>(), "Thread-local test");
+
+    // Test in another thread
+    std::thread t([this]() {
+        auto& thread_context = m_factory->get_thread_local_context("claude");
+        thread_context.set_api_key(m_api_key);
+
+        // This context should be different from main thread's context
+        EXPECT_TRUE(thread_context.get_messages().empty());
+
+        thread_context.add_user_message("Different thread test");
+        EXPECT_EQ(thread_context.get_messages()[0]["content"][0]["text"].get<std::string>(),
+                  "Different thread test");
+    });
+    t.join();
+
+    // Main thread's context should be unchanged
+    EXPECT_EQ(tl_context.get_messages()[0]["content"][0]["text"].get<std::string>(), "Thread-local test");
+}
+
+// Test provider_context helper
+TEST_F(GeneralContextFunctionalTest, ProviderContextHelper) {
+    provider_context claude_ctx(m_factory, "claude");
+    auto& context = claude_ctx.get();
+    context.set_api_key(m_api_key);
+
+    // Test basic functionality
+    context.add_user_message("Hello from provider_context");
+    auto request = context.build_request();
+
+    EXPECT_EQ(request["model"].get<std::string>(), "claude-3-opus-20240229");  // Default model in schema
+    EXPECT_FALSE(request["messages"].empty());
+    EXPECT_EQ(request["messages"][0]["content"][0]["text"].get<std::string>(),
+              "Hello from provider_context");
+
+    // Test reset
+    claude_ctx.reset();
+    EXPECT_TRUE(context.get_messages().empty());
+}
+
+// Test actual API request (if API key is available)
+TEST_F(GeneralContextFunctionalTest, SimpleAPIRequest) {
+    if (m_api_key.empty()) {
+        GTEST_SKIP() << "API key not available";
+    }
+
+    // This test would require actual HTTP client implementation
+    // We'll just test request building for now
+    m_context->set_model("claude-3-haiku-20240307")
+        .set_system_message("You are a helpful assistant.")
+        .add_user_message("What is the capital of France?")
+        .set_parameter("temperature", 0.0)
+        .set_parameter("max_tokens", 50);
+
+    auto request = m_context->build_request();
+
+    EXPECT_EQ(request["model"].get<std::string>(), "claude-3-haiku-20240307");
+    EXPECT_EQ(request["system"].get<std::string>(), "You are a helpful assistant.");
+    EXPECT_FALSE(request["messages"].empty());
+    EXPECT_EQ(request["temperature"].get<double>(), 0.0);
+    EXPECT_EQ(request["max_tokens"].get<int>(), 50);
+}
+
+// Test multimodal request building
+TEST_F(GeneralContextFunctionalTest, MultimodalRequest) {
+    if (!m_context->supports_multimodal()) {
+        GTEST_SKIP() << "Provider does not support multimodal content";
+    }
+
+    create_test_image();
+
+    m_context->add_user_message("What's in this image?", "image/png", "test_image.png");
+    auto request = m_context->build_request();
+
+    // Verify the request contains the image
+    EXPECT_FALSE(request["messages"].empty());
+    EXPECT_GE(request["messages"][0]["content"].size(), 2);  // Text + image
+    EXPECT_EQ(request["messages"][0]["content"][1]["type"].get<std::string>(), "image");
+    EXPECT_EQ(request["messages"][0]["content"][1]["source"]["media_type"].get<std::string>(), "image/png");
+    EXPECT_FALSE(request["messages"][0]["content"][1]["source"]["data"].get<std::string>().empty());
 }
 
 // Test basic single message conversation
@@ -497,12 +610,12 @@ TEST_F(GeneralContextFunctionalTest, EdgeCasesAndErrors) {
     EXPECT_NO_THROW(m_context->add_user_message(long_message));
 
     // Test special characters
-    m_context->clear_messages();
+    m_context->clear_user_messages();
     m_context->add_user_message("Hello 世界! 🌍 Special chars: @#$%^&*()");
     EXPECT_TRUE(m_context->is_valid_request());
 
     // Test empty message
-    m_context->clear_messages();
+    m_context->clear_user_messages();
     EXPECT_NO_THROW(m_context->add_user_message(""));
 
     // Test null/empty parameter values
@@ -512,7 +625,7 @@ TEST_F(GeneralContextFunctionalTest, EdgeCasesAndErrors) {
     m_context->add_user_message("Test");
     m_context->set_parameter("temperature", 0.5);
 
-    m_context->clear_messages();
+    m_context->clear_user_messages();
     auto request = m_context->build_request();
     EXPECT_EQ(request["messages"].size(), 0);
     EXPECT_EQ(request["temperature"], 0.5); // Parameters should remain
@@ -528,7 +641,7 @@ TEST_F(GeneralContextFunctionalTest, RateLimitingHandling) {
     // For now, just verify we can make multiple requests in sequence
 
     for (int i = 0; i < 3; ++i) {
-        m_context->clear_messages();
+        m_context->clear_user_messages();
         m_context->add_user_message("Test message " + std::to_string(i));
 
         auto request = m_context->build_request();
@@ -546,7 +659,7 @@ TEST_F(GeneralContextFunctionalTest, PerformanceTest) {
     // Build many requests
     for (int i = 0; i < 1000; ++i) {
         if (i % 100 == 0) {
-            m_context->clear_messages();
+            m_context->clear_user_messages();
         }
         m_context->add_user_message("Message " + std::to_string(i));
         auto request = m_context->build_request();
@@ -589,7 +702,6 @@ TEST_F(GeneralContextFunctionalTest, ActualAPIIntegration) {
 }
 
 TEST_F(GeneralContextFunctionalTest, MultiProviderSupport) {
-    auto& manager = schema_manager::get_instance();
     std::vector<std::string> providers = {"claude", "openai", "deepseek"};
 
     for (const auto& provider : providers) {
@@ -605,15 +717,15 @@ TEST_F(GeneralContextFunctionalTest, MultiProviderSupport) {
             config.enable_validation = true;
             config.default_max_tokens = 50;
 
-            auto context = manager.create_context(provider, config);
-            EXPECT_NE(context, nullptr);
+            provider_context ctx(m_factory, provider);
+            auto& context = ctx.get();
 
             // Set up a simple request
-            context->add_user_message("Respond with exactly one word: 'Success'");
+            context.add_user_message("Respond with exactly one word: 'Success'");
 
-            auto request = context->build_request();
+            auto request = context.build_request();
             std::string payload = request.dump();
-            std::string api_url = context->get_endpoint();
+            std::string api_url = context.get_endpoint();
             bool is_anthropic = (provider == "claude");
 
             // Make API call
@@ -621,7 +733,7 @@ TEST_F(GeneralContextFunctionalTest, MultiProviderSupport) {
             json response_json = json::parse(response_str);
 
             // Extract response
-            std::string text = context->extract_text_response(response_json);
+            std::string text = context.extract_text_response(response_json);
             EXPECT_FALSE(text.empty());
             EXPECT_TRUE(text.find("Success") != std::string::npos);
 
@@ -725,26 +837,25 @@ TEST_F(GeneralContextFunctionalTest, RealImageHandling) {
 
 // Test provider-specific features
 TEST_F(GeneralContextFunctionalTest, ProviderSpecificFeatures) {
-    auto& manager = schema_manager::get_instance();
-
     // Test OpenAI-specific features
     std::string oa_api_key = get_api_key_for_provider("openai");
     if (!oa_api_key.empty()) {
         try {
-            auto oa_context = manager.create_context("openai");
+            provider_context ctx(m_factory, "openai");
+            auto& oa_context = ctx.get();
 
             // Test OpenAI-specific parameters like response_format for JSON mode
-            oa_context->set_parameter("response_format", {{"type", "json_object"}});
-            oa_context->add_user_message("Return a JSON with keys 'greeting' and 'value'. The greeting should be 'hello' and the value should be 42.");
+            oa_context.set_parameter("response_format", {{"type", "json_object"}});
+            oa_context.add_user_message("Return a JSON with keys 'greeting' and 'value'. The greeting should be 'hello' and the value should be 42.");
 
-            auto request = oa_context->build_request();
+            auto request = oa_context.build_request();
             std::string payload = request.dump();
-            std::string api_url = oa_context->get_endpoint();
+            std::string api_url = oa_context.get_endpoint();
 
             std::string response_str = make_api_call(api_url, oa_api_key, payload, false);
             json response_json = json::parse(response_str);
 
-            std::string text = oa_context->extract_text_response(response_json);
+            std::string text = oa_context.extract_text_response(response_json);
             EXPECT_FALSE(text.empty());
 
             // Verify JSON response
@@ -769,20 +880,21 @@ TEST_F(GeneralContextFunctionalTest, ProviderSpecificFeatures) {
     std::string ds_api_key = get_api_key_for_provider("deepseek");
     if (!ds_api_key.empty()) {
         try {
-            auto ds_context = manager.create_context("deepseek");
+            provider_context ctx(m_factory, "deepseek");
+            auto& ds_context = ctx.get();
 
             // Test DeepSeek-specific parameters or models
-            ds_context->set_model("deepseek-coder");
-            ds_context->add_user_message("Write a Python function to calculate the Fibonacci sequence up to n.");
+            ds_context.set_model("deepseek-coder");
+            ds_context.add_user_message("Write a Python function to calculate the Fibonacci sequence up to n.");
 
-            auto request = ds_context->build_request();
+            auto request = ds_context.build_request();
             std::string payload = request.dump();
-            std::string api_url = ds_context->get_endpoint();
+            std::string api_url = ds_context.get_endpoint();
 
             std::string response_str = make_api_call(api_url, ds_api_key, payload, false);
             json response_json = json::parse(response_str);
 
-            std::string text = ds_context->extract_text_response(response_json);
+            std::string text = ds_context.extract_text_response(response_json);
             EXPECT_FALSE(text.empty());
             EXPECT_TRUE(text.find("def") != std::string::npos);
             EXPECT_TRUE(text.find("fibonacci") != std::string::npos ||

@@ -99,4 +99,64 @@ private:
     [[nodiscard]] http_response send_request(const nlohmann::json& request, progress_callback cancel_check = nullptr);
 };
 
+struct needs_schema {};
+struct has_schema {};
+
+template<typename SchemaState = needs_schema>
+class chat_api_builder {
+private:
+    std::string m_schema_path;
+    context_config m_config;
+    std::string m_api_key;
+
+public:
+    // Only available when schema is not set
+    template<typename T = SchemaState>
+    std::enable_if_t<std::is_same_v<T, needs_schema>,
+                     chat_api_builder<has_schema>>
+    with_schema(const std::string& path) {
+        chat_api_builder<has_schema> next;
+        next.m_schema_path = path;
+        next.m_config = m_config;
+        next.m_api_key = m_api_key;
+        return next;
+    }
+
+    // Available in any state
+    chat_api_builder& with_config(const context_config& config) {
+        m_config = config;
+        return *this;
+    }
+
+    chat_api_builder& with_api_key(const std::string& key) {
+        m_api_key = key;
+        return *this;
+    }
+
+    // Only available when schema is set
+    template<typename T = SchemaState>
+    std::enable_if_t<std::is_same_v<T, has_schema>, std::unique_ptr<chat_api>>
+    build() {
+        auto context = std::make_unique<general_context>(m_schema_path, m_config);
+        if (!m_api_key.empty()) {
+            context->set_api_key(m_api_key);
+        }
+        return std::make_unique<chat_api>(std::move(context));
+    }
+};
+
+/*
+Usage:
+auto api = chat_api_builder<>()
+               .with_schema("schemas/claude.json")  // Required first!
+               .with_api_key(key)                   // Optional, any order
+               .with_config(config)                 // Optional, any order
+               .build();                            // Only compiles if schema was set!
+
+This won't compile:
+auto api = chat_api_builder<>()
+            .with_api_key(key)
+            .build();  // Error: build() not available without schema!
+*/
+
 } // hyni

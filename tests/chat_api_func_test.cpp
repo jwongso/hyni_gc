@@ -35,14 +35,14 @@ private:
 // Test basic construction and initialization
 TEST_F(ChatAPITest, ConstructionWithValidSchema) {
     EXPECT_NO_THROW({
-        auto api = create_chat_api("../schemas/openai.json");
+        auto api = create_chat_api(std::string("../schemas/openai.json"));
         EXPECT_NE(api.get(), nullptr);
     });
 }
 
 TEST_F(ChatAPITest, ConstructionWithInvalidSchema) {
     EXPECT_THROW({
-        auto context = std::make_unique<general_context>("nonexistent_schema.json");
+        auto context = std::make_unique<general_context>(std::string("nonexistent_schema.json"));
         chat_api api(std::move(context));
     }, schema_exception);
 }
@@ -313,7 +313,7 @@ TEST_F(ChatAPITest, ContextReset) {
         context.set_system_message("Test system message");
 
         // Test partial clearing
-        context.clear_messages();
+        context.clear_user_messages();
         auto request = context.build_request();
         EXPECT_EQ(request["messages"].size(), 0);
 
@@ -618,7 +618,7 @@ TEST_F(ChatAPITest, FullWorkflowIntegration) {
 
             // 5. Test context management
             auto original_message_count = request["messages"].size();
-            context.clear_messages();
+            context.clear_user_messages();
             context.add_user_message("New conversation");
 
             auto new_request = context.build_request();

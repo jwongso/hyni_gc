@@ -1,3 +1,14 @@
+// -------------------------------------------------------------------------------------------------
+//
+// Copyright (C) all of the contributors. All rights reserved.
+//
+// This software, including documentation, is protected by copyright controlled by
+// contributors. All rights are reserved. Copying, including reproducing, storing,
+// adapting or translating, any or all of this material requires the prior written
+// consent of all contributors.
+//
+// -------------------------------------------------------------------------------------------------
+
 #pragma once
 
 #include <nlohmann/json.hpp>
@@ -10,6 +21,7 @@
 #include <stdexcept>
 
 namespace hyni {
+
 /**
  * @brief Custom exception for schema-related errors
  */
@@ -19,7 +31,7 @@ public:
      * @brief Constructs a schema exception with the given message
      * @param msg The error message
      */
-    explicit schema_exception(const std::string& msg) noexcept : std::runtime_error(msg) {}
+    explicit schema_exception(const std::string& msg) : std::runtime_error(msg) {}
 };
 
 /**
@@ -31,7 +43,7 @@ public:
      * @brief Constructs a validation exception with the given message
      * @param msg The error message
      */
-    explicit validation_exception(const std::string& msg) noexcept : std::runtime_error(msg) {}
+    explicit validation_exception(const std::string& msg) : std::runtime_error(msg) {}
 };
 
 /**
@@ -46,17 +58,30 @@ struct context_config {
     std::unordered_map<std::string, nlohmann::json> custom_parameters; ///< Custom parameters
 };
 
-// Forward declaration
-class schema_manager;
-
 /**
  * @brief Main class for handling LLM context and API interactions
  *
  * This class manages the context for interacting with language model APIs,
  * including message handling, parameter configuration, and request/response processing.
+ *
+ * @note This class is NOT thread-safe. In multi-threaded environments, each thread
+ *       should maintain its own instance. Consider using thread_local storage:
+ *       @code
+ *       thread_local hyni::general_context context("schema.json");
+ *       @endcode
  */
 class general_context {
 public:
+
+    /**
+     * @brief Rule of 5
+     */
+    general_context(const general_context&) = delete;
+    general_context& operator=(const general_context&) = delete;
+    general_context(general_context&&) = default;
+    general_context& operator=(general_context&&) = default;
+    ~general_context() = default;
+
     /**
      * @brief Constructs a general context with the given schema and configuration
      * @param schema_path Path to the schema file
@@ -65,7 +90,21 @@ public:
      */
     explicit general_context(const std::string& schema_path, const context_config& config = {});
 
-    // Model and system configuration
+    /**
+     * @brief Constructs a general context with the given pre-loaded schema and configuration
+     * @param schema the pre-loaded JSON schema
+     * @param config Configuration options
+     * @throws schema_exception If the schema is invalid or cannot be loaded
+     */
+    explicit general_context(const nlohmann::json& schema,
+                             const context_config& config = {})
+        : m_schema(schema), m_config(config) {
+        validate_schema();
+        cache_schema_elements();
+        apply_defaults();
+        build_headers();
+    }
+
     /**
      * @brief Sets the model to use for requests
      * @param model The model name
@@ -107,7 +146,6 @@ public:
      */
     general_context& set_api_key(const std::string& api_key);
 
-    // Message management
     /**
      * @brief Adds a user message to the conversation
      * @param content The message content
@@ -116,8 +154,9 @@ public:
      * @return Reference to this context for method chaining
      * @throws validation_exception If the message is invalid and validation is enabled
      */
-    general_context& add_user_message(const std::string& content, const std::optional<std::string>& media_type = {},
-                         const std::optional<std::string>& media_data = {});
+    general_context& add_user_message(const std::string& content,
+                                      const std::optional<std::string>& media_type = {},
+                                      const std::optional<std::string>& media_data = {});
 
     /**
      * @brief Adds an assistant message to the conversation
@@ -140,7 +179,6 @@ public:
                     const std::optional<std::string>& media_type = {},
                     const std::optional<std::string>& media_data = {});
 
-    // Request building and response handling
     /**
      * @brief Builds a request object based on the current context
      * @param streaming Whether to enable streaming for this request
@@ -171,7 +209,6 @@ public:
      */
     [[nodiscard]] std::string extract_error(const nlohmann::json& response);
 
-    // Utility methods
     /**
      * @brief Resets the context to its initial state
      * @throws nlohmann::json::type_error If the inital content cannot be parsed
@@ -179,9 +216,14 @@ public:
     void reset();
 
     /**
-     * @brief Clears all messages in the context
+     * @brief Clears all user messages in the context
      */
-    void clear_messages() noexcept;
+    void clear_user_messages() noexcept;
+
+    /**
+     * @brief Clears system message in the context
+     */
+    void clear_system_message() noexcept;
 
     /**
      * @brief Clears all parameters in the context
@@ -194,7 +236,6 @@ public:
      */
     [[nodiscard]] bool has_api_key() const noexcept { return !m_api_key.empty(); }
 
-    // Getters for introspection
     /**
      * @brief Gets the schema used by this context
      * @return The schema as JSON
@@ -217,7 +258,8 @@ public:
      * @brief Gets the HTTP headers for API requests
      * @return Map of header names to values
      */
-    [[nodiscard]] const std::unordered_map<std::string, std::string>& get_headers() const noexcept { return m_headers; }
+    [[nodiscard]] const std::unordered_map<std::string, std::string>& get_headers() const noexcept
+    { return m_headers; }
 
     /**
      * @brief Gets the list of models supported by the provider
@@ -243,7 +285,6 @@ public:
      */
     [[nodiscard]] bool supports_system_messages() const noexcept;
 
-    // Validation
     /**
      * @brief Checks if the current context would produce a valid request
      * @return True if the request would be valid, false otherwise
@@ -256,14 +297,12 @@ public:
      */
     [[nodiscard]] std::vector<std::string> get_validation_errors() const;
 
-    // Parameters
     /**
      * @brief Gets all parameters in the context
      * @return Map of parameter names to values
      */
-    [[nodiscard]] const std::unordered_map<std::string, nlohmann::json>& get_parameters() const noexcept {
-        return m_parameters;
-    }
+    [[nodiscard]] const std::unordered_map<std::string, nlohmann::json>&
+    get_parameters() const noexcept { return m_parameters; }
 
     /**
      * @brief Gets a parameter value by key
@@ -318,10 +357,33 @@ public:
      * @brief Gets all messages in the context
      * @return Vector of message objects
      */
-    [[nodiscard]] const std::vector<nlohmann::json>& get_messages() const noexcept { return m_messages; }
+    [[nodiscard]] const std::vector<nlohmann::json>& get_messages() const noexcept
+    { return m_messages; }
 
 private:
-    // Core data members
+    void load_schema(const std::string& schema_path);
+    void validate_schema();
+    void apply_defaults();
+    void cache_schema_elements();
+    void build_headers();
+
+    nlohmann::json create_message(const std::string& role, const std::string& content,
+                                  const std::optional<std::string>& media_type = {},
+                                  const std::optional<std::string>& media_data = {});
+    nlohmann::json create_text_content(const std::string& text);
+    nlohmann::json create_image_content(const std::string& media_type, const std::string& data);
+
+    [[nodiscard]] nlohmann::json resolve_path(const nlohmann::json& json,
+                                              const std::vector<std::string>& path) const;
+    [[nodiscard]] std::vector<std::string> parse_json_path(const nlohmann::json& path_array) const;
+
+    void validate_message(const nlohmann::json& message) const;
+    void validate_parameter(const std::string& key, const nlohmann::json& value) const;
+
+    [[nodiscard]] std::string encode_image_to_base64(const std::string& image_path) const;
+    [[nodiscard]] bool is_base64_encoded(const std::string& data) const noexcept;
+
+private:
     nlohmann::json m_schema;
     nlohmann::json m_request_template;
     context_config m_config;
@@ -336,34 +398,11 @@ private:
     std::string m_api_key;
     std::unordered_set<std::string> m_valid_roles;
 
-    // Cached paths and formats
     std::vector<std::string> m_text_path;
     std::vector<std::string> m_error_path;
     nlohmann::json m_message_structure;
     nlohmann::json m_text_content_format;
     nlohmann::json m_image_content_format;
-
-    // Internal methods
-    void load_schema(const std::string& schema_path);
-    void validate_schema();
-    void apply_defaults();
-    void cache_schema_elements();
-    void build_headers();
-
-    nlohmann::json create_message(const std::string& role, const std::string& content,
-                                 const std::optional<std::string>& media_type = {},
-                                 const std::optional<std::string>& media_data = {});
-    nlohmann::json create_text_content(const std::string& text);
-    nlohmann::json create_image_content(const std::string& media_type, const std::string& data);
-
-    [[nodiscard]] nlohmann::json resolve_path(const nlohmann::json& json, const std::vector<std::string>& path) const;
-    [[nodiscard]] std::vector<std::string> parse_json_path(const nlohmann::json& path_array) const;
-
-    void validate_message(const nlohmann::json& message) const;
-    void validate_parameter(const std::string& key, const nlohmann::json& value) const;
-
-    [[nodiscard]] std::string encode_image_to_base64(const std::string& image_path) const;
-    [[nodiscard]] bool is_base64_encoded(const std::string& data) const noexcept;
 };
 
 } // hyni

@@ -11,7 +11,7 @@ chat_api::chat_api(std::unique_ptr<general_context> context)
 
 std::string chat_api::send_message(const std::string& message, progress_callback cancel_check) {
     // Clear previous messages if needed (depending on your use case)
-    m_context->clear_messages();
+    m_context->clear_user_messages();
     m_context->add_user_message(message);
 
     auto request = m_context->build_request();
@@ -37,7 +37,7 @@ void chat_api::send_message_stream(const std::string& message,
         throw std::runtime_error("Streaming is not supported by this provider");
     }
 
-    m_context->clear_messages();
+    m_context->clear_user_messages();
     m_context->add_user_message(message);
 
     // Enable streaming in the request

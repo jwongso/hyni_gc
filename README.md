@@ -9,17 +9,28 @@
 
 ```cpp
 // One line to rule them all - works with ANY LLM provider
-#include "general_context.h"
+#include "schema_registry.h"
+#include "context_factory.h"
 #include "chat_api.h"
-auto context = std::make_unique<general_context>("openai"); //mistral, claude, deepSeek
-chat_api chat(std::move(context));
-chat.get_context().set_api_key("XYZ")
-                  .temperature(0.3)
-                  .max_tokens(500)
-                  .set_system_message("You are a helpful professor in quantum theory");
 
-// One-liner conversations
-std::string answer = chat.send_message("What is quantum mechanic?");
+using namespace hyni;
+
+// Create factory once and reuse
+auto registry = schema_registry::create()
+                   .set_schema_directory("./schemas")
+                   .build();
+auto factory = std::make_shared<context_factory>(registry);
+
+// Create a chat API for any provider
+auto chat = chat_api_builder()
+               .with_schema("schemas/claude.json")
+               .with_api_key(api_key)
+               .with_config({.default_temperature = 0.3, .default_max_tokens = 500})
+               .build();
+
+// Set system message and send your query
+chat->get_context().set_system_message("You are a helpful professor in quantum theory");
+std::string answer = chat->send_message("What is quantum mechanics?");
 ```
 
 **No more provider-specific code.** No more JSON wrestling. Just pure, elegant AI conversations.
@@ -47,24 +58,48 @@ std::string answer = chat.send_message("What is quantum mechanic?");
 using namespace hyni;
 
 // Create a context and chat API
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
-chat.get_context().set_api_key("XYZ").set_system_message("You are a friendly software engineer")
-// One-liner conversations
+chat.get_context().set_api_key("XYZ").set_system_message("You are a friendly software engineer");
+
+// One-liner conversation
 std::string answer = chat.send_message("What is recursion?");
 ```
 
-### Builder Pattern with Context
+### Type-Safe Builder Pattern
 ```cpp
-// Set up your context
-auto context = std::make_unique<general_context>("openai");
-chat_api chat(std::move(context));
-chat.get_context().set_system_message("You are an overly enthusiastic barista bot")
-       ->set_parameter("temperature", 0.8)
-       ->set_parameter("max_tokens", 1000)
-       ->set_api_key("1234567890");
+// Use the builder for compile-time safety
+auto chat = chat_api_builder<>()
+                .with_schema("schemas/openai.json")  // Required first!
+                .with_api_key("your-api-key")        // Optional, any order
+                .with_config({                       // Optional, any order
+                    .default_temperature = 0.8,
+                    .default_max_tokens = 1000
+                })
+                .build();
 
-std::string response = chat.send_message("What’s the difference between a macchiato and a cortado?");
+std::string response = chat->send_message("What's the difference between a macchiato and a cortado?");
+```
+
+### Thread-Local Context for Multi-Threaded Apps
+```cpp
+// Create factory once at application startup
+auto registry = schema_registry::create()
+                   .set_schema_directory("./schemas")
+                   .build();
+auto factory = std::make_shared<context_factory>(registry);
+
+// In each worker thread
+void process_query(std::shared_ptr<context_factory> factory, const std::string& query) {
+    // Get thread-local context - created once per thread
+    auto& context = factory->get_thread_local_context("claude");
+    context.set_api_key(get_api_key());
+    
+    chat_api chat(&context);  // Uses reference to thread-local context
+    std::string response = chat.send_message(query);
+    
+    // Process response...
+}
 ```
 
 ### Reuse the same chat for multiple or multi-turn questions
@@ -80,7 +115,7 @@ response = chat.send_message("And now, explain me the time and space complexitie
 
 ### Advanced Context Management
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 context->set_system_message("You are an expert in German tax system");
 
 // Build conversations naturally
@@ -98,7 +133,7 @@ auto response = chat.send_message(); // Send with existing context
 
 ### Synchronous (Simple)
 ```cpp
-auto context = std::make_unique<general_context>("deepseek");
+auto context = std::make_unique<general_context>("schemas/deepseek.json");
 chat_api chat(std::move(context));
 
 std::string result = chat.send_message("Explain how to breed kois");
@@ -107,7 +142,7 @@ std::cout << result << std::endl;
 
 ### Asynchronous (Powerful)
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
 
 auto future = chat.send_message_async("Generate a story about AI");
@@ -121,7 +156,7 @@ std::string story = future.get();
 
 ### Streaming (Real-time)
 ```cpp
-auto context = std::make_unique<general_context>("openai");
+auto context = std::make_unique<general_context>("schemas/openai.json");
 chat_api chat(std::move(context));
 
 chat.send_message_stream("Write a long technical article",
@@ -138,7 +173,7 @@ chat.send_message_stream("Write a long technical article",
 ```cpp
 std::atomic<bool> should_cancel{false};
 
-auto context = std::make_unique<general_context>("openai");
+auto context = std::make_unique<general_context>("schemas/openai.json");
 chat_api chat(std::move(context));
 
 auto future = chat.send_message_async("This might take a while...");
@@ -159,7 +194,7 @@ should_cancel = true;
 
 ### 1. Direct Message Sending
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 context->set_system_message("You are a senior C++ developer");
 
 chat_api chat(std::move(context));
@@ -168,7 +203,7 @@ auto response = chat.send_message("Implement quicksort in C++");
 
 ### 2. Context-First Approach (Recommended)
 ```cpp
-auto context = std::make_unique<general_context>("openai");
+auto context = std::make_unique<general_context>("schemas/openai.json");
 context->set_system_message("You are a creative writer");
 context->add_user_message("Write a haiku about programming");
 
@@ -178,7 +213,7 @@ std::string poem = chat.send_message(); // Uses existing context
 
 ### 3. Conversational Building
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
 
 // Build conversation step by step
@@ -191,7 +226,7 @@ std::string response = chat.send_message();
 
 ### 4. Parameter Configuration
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 context->set_parameter("temperature", 0.3);
 context->set_parameter("max_tokens", 500);
 context->set_parameter("top_p", 0.9);
@@ -207,9 +242,9 @@ std::string response = chat.send_message("Explain machine learning");
 ### Dynamic Provider Switching
 ```cpp
 // Create contexts for different providers
-auto openai_context = std::make_unique<general_context>("openai");
-auto claude_context = std::make_unique<general_context>("claude");
-auto deepseek_context = std::make_unique<general_context>("deepseek");
+auto openai_context = std::make_unique<general_context>("schemas/openai.json");
+auto claude_context = std::make_unique<general_context>("schemas/claude.json");
+auto deepseek_context = std::make_unique<general_context>("schemas/deepseek.json");
 
 // Same question, different providers
 std::string question = "Explain machine learning";
@@ -223,32 +258,26 @@ std::string claude_view = claude_chat.send_message(question);
 std::string deepseek_view = deepseek_chat.send_message(question);
 ```
 
-### Context Access and Modification
+### Using the Registry for Provider Management
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+// Create registry once
+auto registry = schema_registry::create()
+                   .set_schema_directory("./schemas")
+                   .build();
+auto factory = std::make_shared<context_factory>(registry);
+
+// Get available providers
+auto providers = registry->get_available_providers();
+std::cout << "Available providers: " << std::endl;
+for (const auto& provider : providers) {
+    std::cout << "- " << provider << std::endl;
+}
+
+// Create context for any available provider
+auto context = factory->create_context("claude");
 chat_api chat(std::move(context));
 
-// Access context for advanced configuration
-chat.get_context().set_parameter("temperature", 0.8);
-chat.get_context().set_parameter("max_tokens", 2000);
-chat.get_context().add_system_message("You are an expert in distributed systems");
-
 std::string response = chat.send_message("How do I design a scalable API?");
-```
-
----
-
-## 🎙️ Audio Integration
-
-```cpp
-// Live transcription with Whisper
-hyni::audio_transcriber transcriber;
-transcriber.start_listening([](const std::string& text) {
-    if (!text.empty()) {
-        auto response = hyni::ask(text).provider("claude");
-        speak(response);  // Text-to-speech
-    }
-});
 ```
 
 ---
@@ -262,31 +291,61 @@ transcriber.start_listening([](const std::string& text) {
 └─────────────────┘    └──────────────────┘    └─────────────────┘
          │                       │                       │
          │              ┌────────▼────────┐              │
-         │              │ Schema Engine   │              │
+         │              │ Schema Registry │              │
          │              │ (JSON Config)   │              │
+         │              └─────────────────┘              │
+         │                       │                       │
+         │              ┌────────▼────────┐              │
+         │              │ Context Factory │              │
          │              └─────────────────┘              │
          │                                               │
          ▼                                               ▼
-┌─────────────────┐                        ┌─────────────────┐
-│ Audio/Whisper   │                        │   Streaming     │
-│ Integration     │                        │   Response      │
-└─────────────────┘                        └─────────────────┘
+┌─────────────────┐                           ┌─────────────────┐
+│ Thread-Local    │                           │   Streaming     │
+│ Contexts        │                           │   Response      │
+└─────────────────┘                           └─────────────────┘
 ```
 
 ### Core Components
 
 - **`general_context`** - Smart conversation management with automatic history
-- **`chat_api`** - Provider-agnostic HTTP client with streaming support  
+- **`chat_api`** - Provider-agnostic HTTP client with streaming support
 - **`prompt`** - Type-safe message construction with validation
 - **`schema_engine`** - JSON-driven provider configuration
+- **`chat_api_builder`** - Type-safe builder with compile-time validation
 
 ---
 
 ## 🔄 Advanced Features
 
+### Thread-Local Context with Provider Helper
+```cpp
+// Create once at application startup
+auto registry = schema_registry::create()
+                   .set_schema_directory("./schemas")
+                   .build();
+auto factory = std::make_shared<context_factory>(registry);
+
+// Create provider context helpers
+provider_context openai_ctx(factory, "openai");
+provider_context claude_ctx(factory, "claude");
+
+// In any thread:
+void process_request(const std::string& query) {
+    // Get thread-local context for claude
+    auto& context = claude_ctx.get();
+    context.set_api_key(get_api_key());
+    
+    chat_api chat(&context);
+    std::string response = chat.send_message(query);
+    
+    // Process response...
+}
+```
+
 ### Conversation State Management
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
 
 // Build up conversation history
@@ -294,13 +353,22 @@ chat.send_message("What are the SOLID principles?");
 chat.send_message("Can you give me an example of the Single Responsibility Principle?");
 chat.send_message("How does this apply to C++ classes?");
 
-// Context automatically maintains conversation history
-// Each new message builds on the previous conversation
+// Export conversation state for persistence
+nlohmann::json state = chat.get_context().export_state();
+save_to_file("conversation.json", state.dump());
+
+// Later, import the state to continue
+auto new_context = std::make_unique<general_context>("schemas/claude.json");
+nlohmann::json saved_state = nlohmann::json::parse(read_from_file("conversation.json"));
+new_context->import_state(saved_state);
+
+chat_api new_chat(std::move(new_context));
+std::string response = new_chat.send_message("Can we apply this to microservices?");
 ```
 
 ### Stream Processing with Completion Callbacks
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
 
 std::string accumulated_response;
@@ -324,7 +392,7 @@ chat.send_message_stream("Write a detailed explanation of RAII",
 
 ### Error Handling and Cancellation
 ```cpp
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
 
 std::atomic<bool> user_cancelled{false};
@@ -343,23 +411,6 @@ try {
 }
 ```
 
-### Context Persistence and Reuse
-```cpp
-// Create and use a context
-auto context = std::make_unique<general_context>("claude");
-chat_api chat(std::move(context));
-
-chat.send_message("Remember that I'm working on a chess engine project");
-chat.send_message("What data structures should I use for the board?");
-
-// Get reference to context for inspection
-general_context& ctx = chat.get_context();
-std::cout << "Conversation has " << ctx.get_message_count() << " messages\n";
-
-// Context automatically maintains full conversation history
-// No need for manual session management
-```
-
 ---
 
 ## 🛠️ Error Handling
@@ -367,16 +418,20 @@ std::cout << "Conversation has " << ctx.get_message_count() << " messages\n";
 ```cpp
 #include <stdexcept>
 
-auto context = std::make_unique<general_context>("claude");
+auto context = std::make_unique<general_context>("schemas/claude.json");
 chat_api chat(std::move(context));
 
 try {
     std::string response = chat.send_message("Hello world");
     std::cout << response << std::endl;
     
+} catch (const schema_exception& e) {
+    std::cerr << "Schema error: " << e.what() << std::endl;
+} catch (const validation_exception& e) {
+    std::cerr << "Validation error: " << e.what() << std::endl;
 } catch (const std::runtime_error& e) {
-    std::cerr << "Chat API error: " << e.what() << std::endl;
-} catch (const std::exception& e) {
+    std::cerr << "Runtime error: " << e.what() << std::endl;
+} catch (const std::exception&  e) {
     std::cerr << "General error: " << e.what() << std::endl;
 }
 
@@ -438,13 +493,17 @@ MIT License - Use freely in commercial and open-source projects.
 
 ```cpp
 #include "chat_api.h"
-#include "general_context.h"
+#include "chat_api_builder.h"
 
-auto context = std::make_unique<hyni::general_context>("claude");
-hyni::chat_api chat(std::move(context));
+using namespace hyni;
 
-auto response = chat.send_message("How do I get started with Hyni?");
-// "Just create a context, pass it to chat_api, and start chatting! 🚀"
+auto chat = chat_api_builder<>()
+                .with_schema("schemas/claude.json")
+                .with_api_key("your-api-key")
+                .build();
+
+auto response = chat->send_message("How do I get started with Hyni?");
+// "Just create a context with a schema, build a chat_api, and start chatting!"
 ```
 
 Generated by Claude Sonnet 4
