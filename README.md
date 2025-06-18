@@ -127,6 +127,56 @@ chat_api chat(std::move(context));
 auto response = chat.send_message(); // Send with existing context
 ```
 
+### Multimodal Conversations with Images
+
+```cpp
+#include "chat_api.h"
+#include "chat_api_builder.h"
+
+using namespace hyni;
+
+// Create a context with a provider that supports multimodal inputs
+auto chat = chat_api_builder<>()
+                .with_schema("schemas/claude.json")  // Claude 3 supports images
+                .with_api_key("your-api-key")
+                .build();
+
+// Method 1: Direct file path
+chat->get_context().add_user_message(
+    "What can you tell me about this image?", 
+    "image/png", 
+    "path/to/your/image.png"
+);
+
+// Method 2: Base64-encoded image data
+std::string base64_data = read_base64_from_file("encoded_image.txt");
+chat->get_context().add_user_message(
+    "Describe this chart in detail and explain what it means.", 
+    "image/jpeg", 
+    base64_data
+);
+
+// Method 3: With streaming response for multimodal
+chat->send_message_stream(
+    "What text appears in this image?",
+    "image/png",
+    "screenshots/error_message.png",
+    [](const std::string& chunk) {
+        std::cout << chunk << std::flush;
+        return true;  // Continue streaming
+    }
+);
+
+// Method 4: Multiple images in one conversation
+auto& context = chat->get_context();
+context.add_user_message("I'll show you two images. Compare them.");
+context.add_user_message("Here's the first one:", "image/png", "product_v1.png");
+context.add_assistant_message("I see the first image. It shows a product with...");
+context.add_user_message("Here's the second one:", "image/png", "product_v2.png");
+
+std::string comparison = chat->send_message("What are the key differences?");
+```
+
 ---
 
 ## 🔄 Sync vs Async - Your Choice
