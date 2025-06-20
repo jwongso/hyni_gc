@@ -2,7 +2,7 @@ from typing import Optional, Dict, Callable, Any
 from abc import ABC, abstractmethod
 
 # Import from local module with relative import
-from .http_client import HttpClient, RequestsHttpClient, HttpxHttpClient, HttpResponse, StreamCallback
+from http_client import HttpClient, RequestsHttpClient, HttpxHttpClient, HttpResponse, StreamCallback
 
 
 class HttpClientType:

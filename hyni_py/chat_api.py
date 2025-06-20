@@ -144,7 +144,7 @@ class ChatApi:
                 raise NoUserMessageError()
 
         # Build request with streaming enabled
-        request = self._context.build_request(stream=True)
+        request = self._context.build_request(streaming=True)
         self._http_client.set_headers(self._context.get_headers())
 
         # Wrap the chunk handler to parse SSE format
@@ -241,7 +241,7 @@ class ChatApi:
         """
         if self._http_client is None:
             # Fix import path
-            from .http_client_factory import HttpClientFactory
+            from http_client_factory import HttpClientFactory
             self._http_client = HttpClientFactory.create_http_client(self._context)
 
 

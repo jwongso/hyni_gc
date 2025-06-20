@@ -235,10 +235,19 @@ class GeneralContext:
 
                     placeholder = self._schema["authentication"]["key_placeholder"]
 
-                    # Prepare replacement string (with optional prefix)
-                    replacement = self._api_key
+                    # Check if the header value already contains the prefix
                     if "key_prefix" in self._schema["authentication"]:
-                        replacement = self._schema["authentication"]["key_prefix"] + self._api_key
+                        prefix = self._schema["authentication"]["key_prefix"]
+
+                        # If the placeholder in the header already has the prefix, don't add it again
+                        if prefix in header_value and header_value.find(prefix) < header_value.find(placeholder):
+                            # The prefix is already in the header template, just replace placeholder with key
+                            replacement = self._api_key
+                        else:
+                            # The prefix is not in the header template, add it
+                            replacement = prefix + self._api_key
+                    else:
+                        replacement = self._api_key
 
                     # Replace all occurrences of placeholder
                     header_value = header_value.replace(placeholder, replacement)
