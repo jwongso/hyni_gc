@@ -136,6 +136,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Boost::system
 )
 
+add_subdirectory(ui/)
+
 set_target_properties(${PROJECT_NAME} PROPERTIES LINKER_LANGUAGE CXX)
 
 if (BUILD_TESTING)

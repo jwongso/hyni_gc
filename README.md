@@ -46,6 +46,7 @@ std::string answer = chat->send_message("What is quantum mechanics?");
 - 🛑 **Cancellation Control** - Stop requests mid-flight
 - 📦 **Modern C++20** - Clean, expressive API design
 - 🔧 **Schema-Driven** - JSON configs handle all provider differences
+- 🖥️ **Qt6 GUI Application** - Full-featured desktop chat interface
 
 ---
 
@@ -176,6 +177,132 @@ context.add_user_message("Here's the second one:", "image/png", "product_v2.png"
 
 std::string comparison = chat->send_message("What are the key differences?");
 ```
+---
+## 🖥️ Hyni GUI Application
+Hyni includes a full-featured Qt6-based desktop application for interacting with LLM providers through a modern graphical interface.
+
+### GUI Features
+- 🎨 **Modern Qt6 Interface** - Clean, responsive design with markdown rendering
+- 🔄 **Dynamic Provider Loading** - Automatically discovers and loads provider schemas
+- 🔑 **Smart API Key Management** - Loads from environment variables or ~/.hynirc
+- 💬 **Multi-turn Conversations** - Maintain context across multiple messages
+- 🌊 **Streaming Support** - Real-time response streaming with visual feedback
+- 📝 **Markdown Rendering** - Beautiful formatting for code and structured content
+- 🎯 **System Messages** - Set custom instructions for AI behavior
+- 🔍 **Debug Information** - Comprehensive debugging and status information
+
+### Building the GUI
+```cpp
+# Prerequisites
+# - Qt6 (Core, Widgets, Network)
+# - nlohmann_json
+# - C++20 compiler
+
+# Build with CMake
+mkdir build && cd build
+cmake .. -DBUILD_GUI=ON
+make -j$(nproc)
+
+# Run the GUI
+./ui/hyni_gui
+```
+
+### GUI Dependencies
+Add to your system or use package manager:
+```bash
+# Ubuntu/Debian
+sudo apt install qt6-base-dev qt6-tools-dev nlohmann-json3-dev
+
+# Fedora
+sudo dnf install qt6-qtbase-devel qt6-qttools-devel json-devel
+
+# macOS (with Homebrew)
+brew install qt6 nlohmann-json
+
+# Windows (with vcpkg)
+vcpkg install qt6-base qt6-tools nlohmann-json
+```
+
+### Using the GUI
+1. Launch the Application
+
+```bash
+./hyni_gui
+```
+
+2. Select Schema Directory
+- File → Select Schema Directory
+- Choose the folder containing your provider JSON schemas
+
+3. Configure API Keys
+The GUI automatically loads API keys from:
+- Environment variables (OA_API_KEY, CL_API_KEY, DS_API_KEY, MS_API_KEY)
+- ~/.hynirc file
+- Or set manually via Settings → Set API Key
+Example ~/.hynirc:
+```bash
+export OA_API_KEY="sk-..."
+export CL_API_KEY="sk-ant-..."
+export DS_API_KEY="sk-..."
+export MS_API_KEY="..."
+```
+
+4. Select Provider
+- Use the Provider menu to switch between loaded providers
+- Providers with configured API keys show a checkmark ✓
+
+5. Chat Features
+- Streaming: Toggle real-time response streaming
+- Multi-turn: Keep conversation history for context
+- Markdown: Enable/disable markdown rendering
+- System Message: Set via Settings → Set System Message
+- Model Selection: Choose model from status bar dropdown
+
+6. Keyboard Shortcuts
+- Ctrl+Enter: Send message
+- Ctrl+L: Clear conversation
+- Ctrl+K: Set API key
+- Ctrl+M: Set system message
+- Ctrl+D: Show debug information
+- Ctrl+R: Reload API keys
+- Ctrl+Shift+R: Reload schemas
+
+### GUI Architecture
+The GUI is built with clean separation of concerns:
+```
+MainWindow
+    ├── ChatWidget (conversation display and input)
+    │   ├── QTextBrowser (markdown-capable display)
+    │   ├── QTextEdit (user input)
+    │   └── Control checkboxes (streaming, multi-turn, markdown)
+    ├── ProviderManager (schema and provider management)
+    ├── SchemaLoader (threaded JSON schema loading)
+    └── ApiWorker (threaded API communication)
+        ├── StreamingApiWorker
+        └── NonStreamingApiWorker
+```
+
+### Customizing the GUI
+The GUI supports custom styling through Qt stylesheets:
+
+```cpp
+// In chat_widget.cpp
+m_inputText->setStyleSheet(R"(
+    QTextEdit {
+        background-color: #ffffff;
+        color: #000000;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        padding: 5px;
+    }
+)");
+```
+
+### GUI Configuration
+Settings are persisted using QSettings:
+- Schema directory location
+- Window geometry and state
+- User preferences
 
 ---
 
@@ -354,6 +481,12 @@ std::string response = chat.send_message("How do I design a scalable API?");
 │ Thread-Local    │                           │   Streaming     │
 │ Contexts        │                           │   Response      │
 └─────────────────┘                           └─────────────────┘
+         │                                               │
+         ▼                                               ▼
+┌─────────────────┐                           ┌─────────────────┐
+│   Qt6 GUI       │                           │   CLI Tools     │
+│   Application   │                           │   (Optional)    │
+└─────────────────┘                           └─────────────────┘
 ```
 
 ### Core Components
@@ -363,6 +496,7 @@ std::string response = chat.send_message("How do I design a scalable API?");
 - **`prompt`** - Type-safe message construction with validation
 - **`schema_engine`** - JSON-driven provider configuration
 - **`chat_api_builder`** - Type-safe builder with compile-time validation
+- **`hyni_gui`** - Qt6-based graphical user interface
 
 ---
 
@@ -519,6 +653,19 @@ conan install hyni/1.0@
 
 ---
 
+## Dependencies
+
+### Core Library
+- C++20 compatible compiler
+- nlohmann_json (≥ 3.11)
+- libcurl or similar HTTP client library
+- CMake (≥ 3.16)
+### GUI Application (optional)
+- Qt6 (Core, Widgets, Network modules)
+- All core library dependencies
+
+---
+
 ## 🤝 Contributing
 
 We love contributions! Whether it's new LLM providers, features, or bug fixes.
@@ -530,6 +677,12 @@ mkdir build && cd build
 cmake ..
 make -j$(nproc)
 ```
+
+### Adding a New Provider
+1. Create a JSON schema in schemas/ directory
+2. Test with the core library
+3. Verify in the GUI application
+4. Submit a pull request
 
 ---
 

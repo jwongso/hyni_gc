@@ -133,18 +133,12 @@ void general_context::build_headers() {
                 const std::string placeholder =
                     m_schema["authentication"]["key_placeholder"].get<std::string>();
 
-                // Prepare replacement string (with optional prefix)
-                std::string replacement = m_api_key;
-                if (m_schema["authentication"].contains("key_prefix")) {
-                    replacement = m_schema["authentication"]["key_prefix"].get<std::string>() +
-                                  m_api_key;
-                }
-
-                // Replace all occurrences of placeholder
+                // Just replace the placeholder with the API key
+                // The schema should already have the correct format with prefix
                 size_t pos = 0;
                 while ((pos = header_value.find(placeholder, pos)) != std::string::npos) {
-                    header_value.replace(pos, placeholder.length(), replacement);
-                    pos += replacement.length(); // Skip past replacement
+                    header_value.replace(pos, placeholder.length(), m_api_key);
+                    pos += m_api_key.length(); // Skip past replacement
                 }
             }
 
@@ -161,7 +155,6 @@ void general_context::build_headers() {
         }
     }
 }
-
 
 void general_context::apply_defaults() {
     if (m_schema.contains("models") && m_schema["models"].contains("default")) {

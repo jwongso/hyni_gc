@@ -190,6 +190,9 @@ private:
     std::chrono::milliseconds m_timeout{30000};
     int m_max_retries{3};
 
+    template<typename T>
+    friend class chat_api_builder;
+
 public:
     static chat_api_builder create() {
         return chat_api_builder();
