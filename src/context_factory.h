@@ -157,11 +157,17 @@ public:
         , m_config(config) {}
 
     general_context& get() {
-        thread_local std::unique_ptr<general_context> tl_context;
-        if (!tl_context) {
-            tl_context = m_factory->create_context(m_provider_name, m_config);
+        struct thread_cache {
+            std::string provider_name;
+            std::unique_ptr<general_context> context;
+        };
+        thread_local thread_cache cache;
+
+        if (!cache.context || cache.provider_name != m_provider_name) {
+            cache.provider_name = m_provider_name;
+            cache.context = m_factory->create_context(m_provider_name, m_config);
         }
-        return *tl_context;
+        return *cache.context;
     }
 
     void reset() {

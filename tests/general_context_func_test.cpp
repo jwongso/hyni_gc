@@ -317,7 +317,7 @@ TEST_F(GeneralContextFunctionalTest, ProviderContextHelper) {
     context.add_user_message("Hello from provider_context");
     auto request = context.build_request();
 
-    EXPECT_EQ(request["model"].get<std::string>(), "claude-3-opus-20240229");  // Default model in schema
+    EXPECT_EQ(request["model"].get<std::string>(), "claude-3-5-sonnet-20241022");  // Default model in schema
     EXPECT_FALSE(request["messages"].empty());
     EXPECT_EQ(request["messages"][0]["content"][0]["text"].get<std::string>(),
               "Hello from provider_context");

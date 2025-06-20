@@ -293,7 +293,10 @@ nlohmann::json general_context::create_image_content(const std::string& media_ty
 
 nlohmann::json general_context::build_request(bool streaming) {
     nlohmann::json request = m_request_template;
-    auto messages = m_messages;
+    nlohmann::json messages_array = nlohmann::json::array();
+    for (const auto& msg : m_messages) {
+        messages_array.push_back(msg);
+    }
 
     // Set model
     if (!m_model_name.empty()) {
@@ -305,8 +308,9 @@ nlohmann::json general_context::build_request(bool streaming) {
         const bool system_in_roles = m_valid_roles.find("system") != m_valid_roles.end();
 
         if (system_in_roles) {
-            // OpenAI style - system role supported in messages
-            messages.insert(m_messages.begin(), create_message("system", *m_system_message));
+            // Insert system message at beginning
+            messages_array.insert(messages_array.begin(),
+                                  create_message("system", *m_system_message));
         } else {
             // Claude style - use separate system field
             request["system"] = *m_system_message;
@@ -314,7 +318,7 @@ nlohmann::json general_context::build_request(bool streaming) {
     }
 
     // Set messages
-    request["messages"] = std::move(messages);
+    request["messages"] = std::move(messages_array);
 
     // Apply custom parameters FIRST (so they take precedence)
     for (const auto& [key, value] : m_parameters) {
