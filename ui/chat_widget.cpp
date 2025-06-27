@@ -32,6 +32,16 @@ void ChatWidget::initUI()
     m_conversationDisplay->setOpenExternalLinks(true);
     m_conversationDisplay->setFont(QFont("Arial", 10));
 
+    // Style the conversation display
+    m_conversationDisplay->setStyleSheet(R"(
+        QTextBrowser {
+            background-color: #ffffff;
+            color: #000000;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    )");
+
     // Input area with checkboxes
     auto *inputLayout = new QHBoxLayout();
 
@@ -39,6 +49,20 @@ void ChatWidget::initUI()
     m_inputText->setMaximumHeight(100);
     m_inputText->setPlaceholderText("Type your message here...");
     m_inputText->setFont(QFont("Arial", 10));
+
+    // Style the input text
+    m_inputText->setStyleSheet(R"(
+        QTextEdit {
+            background-color: white;
+            color: black;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px;
+        }
+        QTextEdit:focus {
+            border: 2px solid #0066cc;
+        }
+    )");
 
     // Options layout
     auto *optionsLayout = new QVBoxLayout();
@@ -60,6 +84,52 @@ void ChatWidget::initUI()
     connect(m_markdownCheckbox, &QCheckBox::stateChanged,
             this, &ChatWidget::onMarkdownToggled);
 
+    // FIX: Style all checkboxes with explicit colors
+    QString checkboxStyle = R"(
+        QCheckBox {
+            color: #808080;
+            background-color: transparent;
+            spacing: 5px;
+            padding: 2px;
+        }
+        QCheckBox:hover {
+            color: #0066cc;
+        }
+        QCheckBox:disabled {
+            color: #999999;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+        }
+        QCheckBox::indicator:unchecked {
+            border: 2px solid #999999;
+            background-color: #ffffff;
+        }
+        QCheckBox::indicator:unchecked:hover {
+            border: 2px solid #0066cc;
+            background-color: #f0f8ff;
+        }
+        QCheckBox::indicator:checked {
+            border: 2px solid #0066cc;
+            background-color: #0066cc;
+            image: url(:/icons/check-white.png);  /* Optional: add a checkmark icon */
+        }
+        QCheckBox::indicator:checked:hover {
+            border: 2px solid #0052a3;
+            background-color: #0052a3;
+        }
+        QCheckBox::indicator:disabled {
+            border: 2px solid #cccccc;
+            background-color: #f0f0f0;
+        }
+    )";
+
+    m_streamingCheckbox->setStyleSheet(checkboxStyle);
+    m_multiTurnCheckbox->setStyleSheet(checkboxStyle);
+    m_markdownCheckbox->setStyleSheet(checkboxStyle);
+
     optionsLayout->addWidget(m_streamingCheckbox);
     optionsLayout->addWidget(m_multiTurnCheckbox);
     optionsLayout->addWidget(m_markdownCheckbox);
@@ -70,37 +140,6 @@ void ChatWidget::initUI()
     connect(m_sendButton, &QPushButton::clicked,
             this, &ChatWidget::sendRequested);
 
-    inputLayout->addWidget(m_inputText, 1);
-    inputLayout->addLayout(optionsLayout);
-    inputLayout->addWidget(m_sendButton);
-
-    // Style the conversation display
-    m_conversationDisplay->setStyleSheet(R"(
-        QTextBrowser {
-            background-color: #ffffff;
-            color: #000000;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-        }
-    )");
-
-    // Style the input text
-    m_inputText->setStyleSheet(R"(
-        QTextEdit {
-            background-color: #ffffff;
-            color: #000000;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            padding: 5px;
-            font-family: Arial;
-            font-size: 10pt;
-        }
-        QTextEdit:focus {
-            border: 2px solid #0066cc;
-            outline: none;
-        }
-    )");
-
     // Style the send button
     m_sendButton->setStyleSheet(R"(
         QPushButton {
@@ -110,6 +149,7 @@ void ChatWidget::initUI()
             border-radius: 4px;
             padding: 8px 16px;
             font-weight: bold;
+            font-size: 10pt;
         }
         QPushButton:hover {
             background-color: #0052a3;
@@ -123,31 +163,9 @@ void ChatWidget::initUI()
         }
     )");
 
-    // Style checkboxes
-    QString checkboxStyle = R"(
-        QCheckBox {
-            color: #000000;
-            spacing: 5px;
-        }
-        QCheckBox::indicator {
-            width: 16px;
-            height: 16px;
-        }
-        QCheckBox::indicator:unchecked {
-            border: 2px solid #999;
-            background-color: white;
-            border-radius: 3px;
-        }
-        QCheckBox::indicator:checked {
-            border: 2px solid #0066cc;
-            background-color: #0066cc;
-            border-radius: 3px;
-        }
-    )";
-
-    m_streamingCheckbox->setStyleSheet(checkboxStyle);
-    m_multiTurnCheckbox->setStyleSheet(checkboxStyle);
-    m_markdownCheckbox->setStyleSheet(checkboxStyle);
+    inputLayout->addWidget(m_inputText, 1);
+    inputLayout->addLayout(optionsLayout);
+    inputLayout->addWidget(m_sendButton);
 
     // Add widgets to layout
     auto *splitter = new QSplitter(Qt::Vertical);

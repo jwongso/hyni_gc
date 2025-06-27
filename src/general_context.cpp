@@ -242,23 +242,69 @@ general_context &general_context::add_message(const std::string& role, const std
 nlohmann::json general_context::create_message(const std::string& role, const std::string& content,
                                               const std::optional<std::string>& media_type,
                                               const std::optional<std::string>& media_data) {
-    nlohmann::json message = m_message_structure;
-    message["role"] = role;
+    nlohmann::json message;
 
-    // Create content array
-    nlohmann::json content_array = nlohmann::json::array();
-    content_array.push_back(create_text_content(content));
+    // Check if there's a specific structure for this role
+    std::string structure_key = role + "_structure";
+    if (m_schema.contains("message_format") &&
+        m_schema["message_format"].contains(structure_key)) {
+        // Use role-specific structure (e.g., system_structure for OpenAI)
+        message = m_schema["message_format"][structure_key];
 
-    // Add image if provided
-    if (media_type && media_data) {
-        if (!supports_multimodal() && m_config.enable_validation) {
-            throw validation_exception("Provider '" + m_provider_name +
-                                       "' does not support multimodal content");
+        // Replace placeholders
+        if (message.contains("role") && message["role"].is_string() &&
+            message["role"] == "<ROLE>") {
+            message["role"] = role;
+        } else if (!message.contains("role")) {
+            message["role"] = role;
         }
-        content_array.push_back(create_image_content(*media_type, *media_data));
+
+        if (message.contains("content") && message["content"].is_string() &&
+            message["content"] == "<TEXT>") {
+            message["content"] = content;
+        }
+
+        // If media is provided and this is not a plain text message, handle it
+        if (media_type && media_data && message.contains("content") &&
+            message["content"].is_array()) {
+            nlohmann::json content_array = nlohmann::json::array();
+            content_array.push_back(create_text_content(content));
+            content_array.push_back(create_image_content(*media_type, *media_data));
+            message["content"] = content_array;
+        }
+    } else {
+        // Use default structure
+        message = m_message_structure;
+
+        // Set role
+        if (message.contains("role") && message["role"] == "<ROLE>") {
+            message["role"] = role;
+        } else {
+            message["role"] = role;
+        }
+
+        // Handle content
+        if (message.contains("content") && message["content"].is_array()) {
+            // Content is an array (most providers)
+            nlohmann::json content_array = nlohmann::json::array();
+            content_array.push_back(create_text_content(content));
+
+            // Add image if provided
+            if (media_type && media_data) {
+                if (!supports_multimodal() && m_config.enable_validation) {
+                    throw validation_exception("Provider '" + m_provider_name +
+                                               "' does not support multimodal content");
+                }
+                content_array.push_back(create_image_content(*media_type, *media_data));
+            }
+
+            message["content"] = content_array;
+        } else if (message.contains("content")) {
+            // Content is a simple field
+            message["content"] = content;
+        }
     }
 
-    message["content"] = content_array;
     return message;
 }
 
@@ -271,15 +317,33 @@ nlohmann::json general_context::create_text_content(const std::string& text) {
 nlohmann::json general_context::create_image_content(const std::string& media_type,
                                                      const std::string& data) {
     nlohmann::json content = m_image_content_format;
-    content["source"]["media_type"] = media_type;
 
-    // Handle both base64 data and file paths
+    // Get base64 data
+    std::string base64_data;
     if (is_base64_encoded(data)) {
-        content["source"]["data"] = data;
+        // Already base64 encoded
+        if (data.starts_with("data:")) {
+            // Extract just the base64 part from data URI
+            size_t comma_pos = data.find(',');
+            if (comma_pos != std::string::npos) {
+                base64_data = data.substr(comma_pos + 1);
+            } else {
+                base64_data = data;
+            }
+        } else {
+            base64_data = data;
+        }
     } else {
         // Assume it's a file path and encode it
-        content["source"]["data"] = encode_image_to_base64(data);
+        base64_data = encode_image_to_base64(data);
     }
+
+    // Now apply the format based on the schema template
+    apply_template_values(content, {
+        {"<IMAGE_URL>", "data:" + media_type + ";base64," + base64_data},
+        {"<BASE64_DATA>", base64_data},
+        {"<MEDIA_TYPE>", media_type}
+    });
 
     return content;
 }
@@ -512,6 +576,13 @@ void general_context::validate_message(const nlohmann::json& message) const {
 void general_context::validate_parameter(const std::string& key,
                                          const nlohmann::json& value) const {
     if (value.is_null()) {
+        // Some parameters allow null
+        if (m_schema.contains("parameters") &&
+            m_schema["parameters"].contains(key) &&
+            m_schema["parameters"][key].contains("default") &&
+            m_schema["parameters"][key]["default"].is_null()) {
+            return; // null is allowed for this parameter
+        }
         throw validation_exception("Parameter '" + key + "' cannot be null");
     }
 
@@ -520,6 +591,72 @@ void general_context::validate_parameter(const std::string& key,
     }
 
     auto param_def = m_schema["parameters"][key];
+
+    if (param_def.contains("type") && param_def["type"].is_array()) {
+        // Multiple types allowed
+        bool type_matched = false;
+        std::vector<std::string> allowed_types;
+
+        for (const auto& allowed_type : param_def["type"]) {
+            std::string type_str = allowed_type.get<std::string>();
+            allowed_types.push_back(type_str);
+
+            if ((type_str == "string" && value.is_string()) ||
+                (type_str == "array" && value.is_array()) ||
+                (type_str == "integer" && value.is_number_integer()) ||
+                (type_str == "float" && value.is_number()) ||
+                (type_str == "boolean" && value.is_boolean()) ||
+                (type_str == "object" && value.is_object())) {
+                type_matched = true;
+                break;
+            }
+        }
+
+        if (!type_matched) {
+            std::string types_str = "[";
+            for (size_t i = 0; i < allowed_types.size(); ++i) {
+                types_str += allowed_types[i];
+                if (i < allowed_types.size() - 1) types_str += ", ";
+            }
+            types_str += "]";
+            throw validation_exception("Parameter '" + key + "' must be one of types: " + types_str);
+        }
+
+        // Additional validation for arrays
+        if (value.is_array() && param_def.contains("maxItems")) {
+            size_t max_items = param_def["maxItems"].get<size_t>();
+            if (value.size() > max_items) {
+                throw validation_exception("Parameter '" + key + "' array exceeds maximum of " +
+                                         std::to_string(max_items) + " items");
+            }
+        }
+
+        // Validate array items if specified
+        if (value.is_array() && param_def.contains("items")) {
+            auto items_def = param_def["items"];
+            if (items_def.contains("type")) {
+                std::string item_type = items_def["type"].get<std::string>();
+                for (const auto& item : value) {
+                    if (item_type == "string" && !item.is_string()) {
+                        throw validation_exception("Parameter '" + key +
+                                                 "' array items must be strings");
+                    }
+                }
+            }
+            if (items_def.contains("maxLength")) {
+                size_t max_length = items_def["maxLength"].get<size_t>();
+                for (const auto& item : value) {
+                    if (item.is_string() && item.get<std::string>().length() > max_length) {
+                        throw validation_exception("Parameter '" + key +
+                                                 "' array item exceeds maximum length of " +
+                                                 std::to_string(max_length));
+                    }
+                }
+            }
+        }
+
+        return; // Skip other validations since we handled multi-type
+    }
 
     // Add string length validation
     if (value.is_string() && param_def.contains("max_length")) {
@@ -632,6 +769,29 @@ bool general_context::is_base64_encoded(const std::string& data) const noexcept 
 
     // Validate length and padding (Base64 length must be divisible by 4)
     return (data_len % 4 == 0) && (padding != 1);  // 1 padding char is invalid
+}
+
+void general_context::apply_template_values(nlohmann::json& j,
+                                           const std::unordered_map<std::string, std::string>& replacements) {
+    if (j.is_string()) {
+        std::string str = j.get<std::string>();
+        for (const auto& [placeholder, value] : replacements) {
+            size_t pos = 0;
+            while ((pos = str.find(placeholder, pos)) != std::string::npos) {
+                str.replace(pos, placeholder.length(), value);
+                pos += value.length();
+            }
+        }
+        j = str;
+    } else if (j.is_object()) {
+        for (auto& [key, value] : j.items()) {
+            apply_template_values(value, replacements);
+        }
+    } else if (j.is_array()) {
+        for (auto& item : j) {
+            apply_template_values(item, replacements);
+        }
+    }
 }
 
 void general_context::reset() {

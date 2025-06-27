@@ -382,6 +382,8 @@ private:
 
     [[nodiscard]] std::string encode_image_to_base64(const std::string& image_path) const;
     [[nodiscard]] bool is_base64_encoded(const std::string& data) const noexcept;
+    void apply_template_values(nlohmann::json& j,
+                               const std::unordered_map<std::string, std::string>& replacements);
 
 private:
     nlohmann::json m_schema;
