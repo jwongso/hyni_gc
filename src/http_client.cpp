@@ -1,4 +1,5 @@
 #include "http_client.h"
+#include "logger.h"
 #include <sstream>
 
 namespace hyni {
@@ -61,6 +62,7 @@ http_client& http_client::set_proxy(const std::string& proxy) {
 
 http_response http_client::post(const std::string& url, const nlohmann::json& payload,
                                 progress_callback cancel_check) {
+    LOG_INFO("http_client::post()");
     http_response response;
 
     std::string payload_str = payload.dump();
@@ -81,7 +83,9 @@ http_response http_client::post(const std::string& url, const nlohmann::json& pa
     CURLcode res = curl_easy_perform(m_curl.get());
 
     if (res != CURLE_OK) {
+        LOG_ERROR("cURL error: " + std::to_string((int)res));
         response.error_message = curl_easy_strerror(res);
+        LOG_ERROR("cURL error: " + *curl_easy_strerror(res));
         response.success = false;
     } else {
         curl_easy_getinfo(m_curl.get(), CURLINFO_RESPONSE_CODE, &response.status_code);

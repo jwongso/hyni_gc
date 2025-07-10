@@ -12,6 +12,7 @@
 #include "chat_api.h"
 #include "http_client.h"
 #include "http_client_factory.h"
+#include "logger.h"
 
 namespace hyni {
 
@@ -21,6 +22,8 @@ chat_api::chat_api(std::unique_ptr<general_context> context)
 }
 
 std::string chat_api::send_message(const std::string& message, progress_callback cancel_check) {
+    LOG_INFO("chat_api::send_message()");
+
     ensure_http_client();
 
     m_context->clear_user_messages();
@@ -31,6 +34,7 @@ std::string chat_api::send_message(const std::string& message, progress_callback
     auto response = m_http_client->post(m_context->get_endpoint(), request, cancel_check);
 
     if (!response.success) {
+        LOG_ERROR("API request failed: " + response.error_message);
         throw std::runtime_error("API request failed: " + response.error_message);
     }
 
@@ -38,6 +42,7 @@ std::string chat_api::send_message(const std::string& message, progress_callback
         auto json_response = nlohmann::json::parse(response.body);
         return m_context->extract_text_response(json_response);
     } catch (const std::exception& e) {
+        LOG_ERROR("Extract response failed: " + *e.what());
         throw failed_api_response(std::string(e.what()));
     }
 }
